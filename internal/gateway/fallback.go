@@ -36,6 +36,7 @@ import (
 
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/smartroute"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
 )
@@ -1212,7 +1213,36 @@ func asideOf(cs []candidate, q provider.Provider, fallback bool, from provider.P
 // resting, a model its plugin says is busier than the user's
 // settings.BusyLoad (busyOf) goes behind the ready ones: it answers, only
 // after a wait in its vendor's queue (axelburks on Discord).
+// dropSmartExcluded takes out the models the smart routing page keeps out
+// of the running (excluded by the user, disabled after ten failures in a
+// row, resting after one). It fails open: a pool with nothing left is
+// tried as it was, never left empty.
+func dropSmartExcluded(out []candidate, pl planned) ([]candidate, planned) {
+	if len(out) == 0 {
+		return out, pl
+	}
+	now := time.Now()
+	store := smartroute.Open()
+	kept := make([]candidate, 0, len(out))
+	keptW := make([]Weighed, 0, len(out))
+	for i, c := range out {
+		if store.ExcludedOrCooling(c.p.ID, c.model, now) {
+			continue
+		}
+		kept = append(kept, c)
+		if i < len(pl.order) {
+			keptW = append(keptW, pl.order[i])
+		}
+	}
+	if len(kept) == 0 {
+		return out, pl
+	}
+	pl.order = keptW
+	return kept, pl
+}
+
 func restLast(out []candidate, pl planned) ([]candidate, planned) {
+	out, pl = dropSmartExcluded(out, pl)
 	if len(out) == 1 {
 		if r, ok := restingOf(out[0]); ok {
 			pl.order[0].Rest = &r // tried all the same: there is no other

@@ -40,6 +40,7 @@ import (
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/pluginrt"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/smartroute"
 	"github.com/yetone/magpie/internal/redact"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
@@ -2210,6 +2211,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		failedWith(&rec, call.Status, call.Error, "")
 		withBodies(&rec, &call)
 		appendUsage(r, rec)
+		// the smart routing page's numbers, from the real answer
+		if call.Status < 400 && call.To != "" {
+			tps := 0.0
+			if out := call.Usage.billed().Output; out > 1 && call.Millis > call.TTFT {
+				tps = float64(out) / (float64(call.Millis-call.TTFT) / 1000)
+			}
+			smartroute.Open().Succeeded(call.Provider, call.Model, float64(call.TTFT), tps, float64(call.Millis))
+		}
 	}
 	// a request turned away before any provider was asked is in the log
 	// as the failure it was, with the reason
@@ -3990,6 +3999,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				}
 				withBodies(&rec, refusal)
 				appendUsage(r, rec)
+		// the smart routing page's numbers, from the real answer
+		if call.Status < 400 && call.To != "" {
+			tps := 0.0
+			if out := call.Usage.billed().Output; out > 1 && call.Millis > call.TTFT {
+				tps = float64(out) / (float64(call.Millis-call.TTFT) / 1000)
+			}
+			smartroute.Open().Succeeded(call.Provider, call.Model, float64(call.TTFT), tps, float64(call.Millis))
+		}
 			}
 			failedRow = nil // its row is written
 			continue
@@ -4035,6 +4052,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				}
 				withBodies(&rec, refusal)
 				appendUsage(r, rec)
+		// the smart routing page's numbers, from the real answer
+		if call.Status < 400 && call.To != "" {
+			tps := 0.0
+			if out := call.Usage.billed().Output; out > 1 && call.Millis > call.TTFT {
+				tps = float64(out) / (float64(call.Millis-call.TTFT) / 1000)
+			}
+			smartroute.Open().Succeeded(call.Provider, call.Model, float64(call.TTFT), tps, float64(call.Millis))
+		}
 			}
 			failedRow = nil // its row is written
 			continue
@@ -4790,6 +4815,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		failedWith(&rec, call.Status, call.Error, call.Usage.ErrType)
 		withBodies(&rec, &call)
 		appendUsage(r, rec)
+		// the smart routing page's numbers, from the real answer
+		if call.Status < 400 && call.To != "" {
+			tps := 0.0
+			if out := call.Usage.billed().Output; out > 1 && call.Millis > call.TTFT {
+				tps = float64(out) / (float64(call.Millis-call.TTFT) / 1000)
+			}
+			smartroute.Open().Succeeded(call.Provider, call.Model, float64(call.TTFT), tps, float64(call.Millis))
+		}
 		if call.Status < 400 {
 			// what its model searched with its provider's own tool
 			logNativeSearches(r.Context(), call.Usage.searches, start, call.Agent, call.Provider, where, model)

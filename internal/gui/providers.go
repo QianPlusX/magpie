@@ -41,6 +41,10 @@ type modelJSON struct {
 	// Reasonless: the user said it takes no reasoning ask
 	// (provider.SetModelReasonless): none of Efforts is kept, and none is sent
 	Reasonless bool    `json:"reasonless,omitempty"`
+	// Inputs and Outputs: what its source listed it takes and makes
+	// (text, image, audio…), for the smart routing page's type filter
+	Inputs  []string `json:"inputs,omitempty"`
+	Outputs []string `json:"outputs,omitempty"`
 	Images     bool    `json:"images"`              // agents are told it can see images
 	ImageSet   bool    `json:"imageSet,omitempty"`  // the user said so, rather than its vendor
 	Own        bool    `json:"ownImages,omitempty"` // its vendor's answer, which a staged Restore default shows
@@ -888,7 +892,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 			images = said
 		}
 		window := p.WindowOf(m)
-		j := modelJSON{ID: m.ID, Name: m.Name, Efforts: provider.EffortsOf(m), On: on, Context: window, Output: provider.OutputWithin(window, p.ReplyLimitIn(m, set)), Listed: provider.ListedWindow(m), Max: m.MaxContext, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Images: images, ImageSet: imageSet, Own: own, Best: newest[m.ID]}
+		j := modelJSON{ID: m.ID, Name: m.Name, Efforts: provider.EffortsOf(m), On: on, Context: window, Output: provider.OutputWithin(window, p.ReplyLimitIn(m, set)), Listed: provider.ListedWindow(m), Max: m.MaxContext, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Inputs: m.InputModalities, Outputs: m.OutputModalities, Images: images, ImageSet: imageSet, Own: own, Best: newest[m.ID]}
 		// a plugin reports a model's load by its own id, not one the user
 		// lists it by (axelburks on Discord)
 		ownID := p.OwnModelID(m.ID)

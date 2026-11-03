@@ -25,6 +25,8 @@ magpie.plugin("routing", (ctx) => {
       <button class="text rt-newgroup" id="rtNewGroup" type="button" data-feature="groups" data-tt="Make a routing group of any models you like — agents pick it as one model"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg><span data-t>New group</span></button>
       <button class="text rt-mask" id="rtMask" aria-pressed="false" data-tt="Mask the accounts on every page — email addresses and account names — for a screenshot to share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg><span data-t>Hide accounts</span></button></div>
     <section class="rt" id="rt"></section>
+    <div class="rt-tabs" id="rtTabs"><button type="button" data-rtab="classic" class="on">原版路由</button><button type="button" data-rtab="smart">智能路由</button></div>
+    <section class="rt-smart" id="rtSmart" hidden></section>
     <div class="rt-more" id="rtMore"></div>
 `,
     // once the window's scripts have all run: the page it opens on is
@@ -43,6 +45,7 @@ magpie.plugin("routing", (ctx) => {
 function routingPage(part) {
   const box = $("#rt");
   if (!box) return;
+  smartRoutePage();
   const NS = "http://www.w3.org/2000/svg";
   const still = calm;
   const shown = () => !$("#view-routing").hidden && !document.hidden;
@@ -8140,4 +8143,123 @@ function routingPage(part) {
   // after the trace's first answer, which it doesn't need (CyberCaius)
   if (pBox) loadToday();
   poll();
+}
+
+
+// ---------- smart routing: the tab beside the classic page ----------
+// Shows each model's last standing (internal/smartroute, /api/smartroute):
+// candidate / diagnosing / cooling / busy / disabled / excluded, refreshed
+// every few seconds while the tab is open.
+function smartRoutePage() {
+  const tabs = $("#rtTabs"), smart = $("#rtSmart"), classic = $("#rt"), more = $("#rtMore");
+  if (!tabs || !smart) return;
+  if (tabs.dataset.ready) return;
+  tabs.dataset.ready = "1";
+
+  const css = document.createElement("style");
+  css.textContent = `
+.rt-tabs{display:flex;gap:8px;margin:20px 0 16px}
+.rt-tabs button{padding:5px 14px;border-radius:999px;border:1px solid rgba(128,128,128,.45);background:none;color:inherit;font:inherit;font-size:13px;cursor:pointer;opacity:.6}
+.rt-tabs button.on{opacity:1;font-weight:600;border-color:currentColor}
+.rt-sub{display:flex;gap:6px;overflow-x:auto;margin:0 0 12px;padding-bottom:2px}
+.rt-sub button{white-space:nowrap;padding:4px 10px;border-radius:999px;border:1px solid rgba(128,128,128,.4);background:none;color:inherit;font:inherit;font-size:12px;cursor:pointer;opacity:.6}
+.rt-sub button.on{opacity:1;border-color:currentColor}
+.sr-free{color:#1a7f37;font-size:11px;border:1px solid rgba(26,127,55,.45);border-radius:4px;padding:0 4px}
+.sr-item{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;padding:10px 12px;border:1px solid rgba(128,128,128,.25);border-radius:10px;margin-bottom:8px;font-size:13px}
+.sr-item .name{font-weight:600}
+.sr-item .meta{opacity:.65;font-size:12px}
+.sr-item .err{flex:1 1 100%;opacity:.75;font-size:12px;word-break:break-all}
+.sr-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
+.sr-ok{background:#2e9e5b}.sr-bad{background:#d64545}.sr-none{background:#8a8a8a}
+.sr-empty{opacity:.55;padding:18px 4px;font-size:13px}
+.sr-copy{border:1px solid rgba(128,128,128,.45);background:none;color:inherit;font:inherit;font-size:11px;padding:2px 8px;border-radius:6px;cursor:pointer}
+.sr-switch{margin-left:auto;font-size:12px;opacity:.8}
+`;
+  document.head.appendChild(css);
+
+  const NAMES = { candidate: "候选中", diagnosing: "诊断中", cooling: "冷却中", busy: "并发满", disabled: "已禁用", excluded: "未参与" };
+  let cur = "candidate", entries = [], timer = null, show = "classic";
+
+  const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const num = (v, unit, digits) => (v ? (digits ? v.toFixed(digits) : Math.round(v)) + unit : "—");
+
+  async function load() {
+    try {
+      const r = await fetch("/api/smartroute", { cache: "no-store" });
+      if (r.ok) entries = (await r.json()).entries || [];
+    } catch (e) { /* gateway not up yet */ }
+    if (show === "smart") draw();
+  }
+
+  var TYPE_NAMES = { text: "文本", image: "图片", audio: "语音", video: "视频", pdf: "文档" };
+
+  function item(e) {
+    const ok = e.state === "candidate";
+    const dot = ok ? "sr-ok" : (e.state === "diagnosing" || e.state === "excluded") ? "sr-none" : "sr-bad";
+    const label = ok ? "可用" : e.state === "excluded" ? "未参与" : e.state === "diagnosing" ? "未检测" : "不可用";
+    const parts = [`<span class="sr-dot ${dot}"></span>`, `<span class="name">${esc(e.model)}</span>`, `<span class="meta">${esc(e.provider)}</span>`];
+    if (e.free) parts.push(`<span class="sr-free">免费</span>`);
+    const types = Array.isArray(e.outputs) && e.outputs.length ? e.outputs : e.inputs;
+    if (Array.isArray(types) && types.length) {
+      parts.push(`<span class="meta">${esc(types.map((t) => TYPE_NAMES[t] || t).join("/"))}</span>`);
+    }
+    if (e.context) parts.push(`<span class="meta">上下文 ${esc(Math.round(e.context / 1000))}k</span>`);
+    if (e.state === "candidate" || e.lastOk) {
+      parts.push(`<span class="meta">首字 ${num(e.ttft, "ms")}</span>`);
+      parts.push(`<span class="meta">速度 ${num(e.tps, " tok/s", 1)}</span>`);
+      parts.push(`<span class="meta">延迟 ${num(e.latency, "ms")}</span>`);
+    }
+    if (e.failures) parts.push(`<span class="meta">连续失败 ${esc(e.failures)}</span>`);
+    parts.push(`<span class="meta">${esc(label)}</span>`);
+    const sw = e.state === "excluded"
+      ? `<button class="sr-switch" data-act="include" data-p="${esc(e.provider)}" data-m="${esc(e.model)}">重新参与</button>`
+      : `<button class="sr-switch" data-act="exclude" data-p="${esc(e.provider)}" data-m="${esc(e.model)}">不参与</button>`;
+    let html = `<div class="sr-item">${parts.join("")}${sw}</div>`;
+    if (e.lastError) {
+      html = `<div class="sr-item">${parts.join("")}${sw}<div class="err">${esc(e.lastError)}</div><button class="sr-copy" data-copy="${esc(e.lastError)}">复制错误</button></div>`;
+    }
+    return html;
+  }
+
+  function draw() {
+    const groups = {};
+    for (const k of Object.keys(NAMES)) groups[k] = [];
+    for (const e of entries) (groups[e.state] || groups.diagnosing).push(e);
+    const bar = Object.keys(NAMES).map((k) => `<button data-sub="${k}" class="${k === cur ? "on" : ""}">${NAMES[k]} ${groups[k].length}</button>`).join("");
+    const list = (groups[cur] || []).map(item).join("");
+    smart.innerHTML = `<div class="rt-sub">${bar}</div>` + (list || `<div class="sr-empty">${cur === "diagnosing" ? "没有待诊断的模型" : "这里还没有模型"}</div>`);
+    smart.querySelectorAll("[data-sub]").forEach((b) => { b.onclick = () => { cur = b.dataset.sub; draw(); }; });
+    smart.querySelectorAll("[data-act]").forEach((b) => {
+      b.onclick = async () => {
+        const excluded = b.dataset.act === "exclude";
+        try {
+          const r = await fetch("/api/smartroute/toggle", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ provider: b.dataset.p, model: b.dataset.m, excluded }),
+          });
+          if (r.ok) entries = (await r.json()).entries || [];
+        } catch (e) { /* keep the page as it was */ }
+        draw();
+      };
+    });
+    smart.querySelectorAll("[data-copy]").forEach((b) => {
+      b.onclick = () => {
+        navigator.clipboard?.writeText(b.dataset.copy).then(() => { b.textContent = "已复制"; }, () => { b.textContent = "复制失败"; });
+      };
+    });
+  }
+
+  function pick(which) {
+    show = which;
+    tabs.querySelectorAll("[data-rtab]").forEach((b) => b.classList.toggle("on", b.dataset.rtab === which));
+    const smartOn = which === "smart";
+    // the stage (the live requests) stays: only the groups below give way
+    smart.hidden = !smartOn;
+    if (more) more.hidden = smartOn;
+    if (smartOn) { load(); }
+  }
+
+  tabs.querySelectorAll("[data-rtab]").forEach((b) => { b.onclick = () => pick(b.dataset.rtab); });
+  pick("classic");
+  setInterval(() => { if (show === "smart" && !document.hidden) load(); }, 3000);
 }

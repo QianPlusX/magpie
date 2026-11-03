@@ -29,6 +29,7 @@ import (
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/smartroute"
 	"github.com/yetone/magpie/internal/routes"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
@@ -1219,7 +1220,28 @@ const restErrorRunes = 300
 
 // restAfter sets a failed candidate aside for as long as its failure says.
 func (s *Server) restAfter(c candidate, status int, header http.Header, body []byte) Rest {
+	// the smart routing page: a failure it can count, or one that is the
+	// configuration's (4xx) and only keeps its words
+	if c.p.ID != "" && c.model != "" && status >= 400 {
+		smartroute.Open().Failed(c.p.ID, c.model, reasonOf(status, body), status >= 500)
+	}
 	return s.restAfterMarked(c, status, header, body, openRouterSharedPool(body))
+}
+
+// reasonOf is the short words a failure is kept as: its status and the
+// first line of what the upstream said.
+func reasonOf(status int, body []byte) string {
+	line := strings.TrimSpace(string(body))
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	if len(line) > 200 {
+		line = line[:200]
+	}
+	if line == "" {
+		return fmt.Sprintf("HTTP %d", status)
+	}
+	return fmt.Sprintf("HTTP %d: %s", status, line)
 }
 
 // restAfterMarked keeps an upstream routing fact through gateway error
