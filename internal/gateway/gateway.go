@@ -2217,7 +2217,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			if out := call.Usage.billed().Output; out > 1 && call.Millis > call.TTFT {
 				tps = float64(out) / (float64(call.Millis-call.TTFT) / 1000)
 			}
-			smartroute.Open().Succeeded(call.Provider, call.Model, float64(call.TTFT), tps, float64(call.Millis))
+			smartroute.Open().Succeeded(call.Provider, call.Model, "", float64(call.TTFT), tps, float64(call.Millis))
 		}
 	}
 	// a request turned away before any provider was asked is in the log
@@ -2343,6 +2343,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	}
 	// any Claude Code subagent's turn, moved or not, for the Routing page's tag
 	subagentID := subagentTurnOf(r, call.Kind, body, desktopPick != nil || subagentEffort != "")
+	// 供应商页没勾的模型：这里就拒掉，不再发给上游去撞 400
+	// 智能路由的诊断和供应商页的「测试模型」会带 X-Magpie-Diagnose：它们测的
+	// 是编辑器里刚勾上、还没保存的模型，放行一次，用户不必先保存再测
+	if !provider.IsGroupRef(asked) && !provider.Checked(asked) && !diagnoseProbe(r) {
+		call.Status, call.Error = 404, "model not selected"
+		writeError(w, from, 404, notPicked(asked))
+		turnedAway()
+		return
+	}
 	p, model, ok := provider.Resolve(asked)
 	// a model the user disabled (#1867) — asked by its id, the model a
 	// sub-agent was put on, a group with every model in it disabled — is
@@ -2993,6 +3002,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// unmasked: masked by PromptText when it went whole (#3973)
 	promptRead := s.inspectPrompt(tr, from, body, body, sentWhole)
 	var lastTried provider.Provider // the last try's, for its model's context window and the usage's endpoint
+	var lastRest string            // 同上那次尝试的账号标识：智能路由按账号记冷却
 	var skipped []string
 	sent := ""       // the reasoning the last try's model was asked for
 	wentAt := ""     // and the level that went, once translated (wireEffort, #1636)
@@ -3227,6 +3237,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		call.Provider, call.To, call.Usage = c.p.ID, "", Usage{}
 		model = c.model
 		lastTried = c.p
+		lastRest = c.rest
 		where = c.p.Where()
 		providerKeyID, providerKeyName = "", ""
 		if c.p.Account == nil && c.p.Key != "" {
@@ -4005,7 +4016,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			if out := call.Usage.billed().Output; out > 1 && call.Millis > call.TTFT {
 				tps = float64(out) / (float64(call.Millis-call.TTFT) / 1000)
 			}
-			smartroute.Open().Succeeded(call.Provider, call.Model, float64(call.TTFT), tps, float64(call.Millis))
+			smartroute.Open().Succeeded(call.Provider, call.Model, c.rest, float64(call.TTFT), tps, float64(call.Millis))
 		}
 			}
 			failedRow = nil // its row is written
@@ -4058,7 +4069,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			if out := call.Usage.billed().Output; out > 1 && call.Millis > call.TTFT {
 				tps = float64(out) / (float64(call.Millis-call.TTFT) / 1000)
 			}
-			smartroute.Open().Succeeded(call.Provider, call.Model, float64(call.TTFT), tps, float64(call.Millis))
+			smartroute.Open().Succeeded(call.Provider, call.Model, c.rest, float64(call.TTFT), tps, float64(call.Millis))
 		}
 			}
 			failedRow = nil // its row is written
@@ -4821,7 +4832,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			if out := call.Usage.billed().Output; out > 1 && call.Millis > call.TTFT {
 				tps = float64(out) / (float64(call.Millis-call.TTFT) / 1000)
 			}
-			smartroute.Open().Succeeded(call.Provider, call.Model, float64(call.TTFT), tps, float64(call.Millis))
+			smartroute.Open().Succeeded(call.Provider, call.Model, lastRest, float64(call.TTFT), tps, float64(call.Millis))
 		}
 		if call.Status < 400 {
 			// what its model searched with its provider's own tool
@@ -9616,3 +9627,12 @@ func splitSent(sent int64, start, firstBegan, began time.Time, asked, queued int
 	}
 	return own, retried, waited
 }
+
+// diagnoseProbe is a request from the smart page's diagnoser or the
+// Providers page's Test models button: it asks the gateway the way an agent
+// does, for a model the user may not have saved yet, so the picked-models
+// check lets it through once.
+func diagnoseProbe(r *http.Request) bool {
+	return r != nil && r.Header.Get("X-Magpie-Diagnose") == "1"
+}
+

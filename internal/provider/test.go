@@ -34,6 +34,10 @@ type Result struct {
 	Millis   int64    `json:"ms"`
 	Model    string   `json:"model,omitempty"`
 	Error    string   `json:"error,omitempty"`
+	// TTFT / TPS: 同一条 agent 流程量到的首字与输出速度，测试完就能直接
+	// 显示在芯片上，不必再等 /api/smartroute 的下一轮
+	TTFT int64   `json:"ttft,omitempty"`
+	TPS  float64 `json:"tps,omitempty"`
 	// otherAPI: the vendor said the model isn't served on the API asked
 	// (catalog.WrongEndpoint), so another may be asked instead
 	otherAPI bool

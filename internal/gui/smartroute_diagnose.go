@@ -2,7 +2,8 @@ package gui
 
 import (
 	"bufio"
-	"encoding/json"
+	"strconv"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/smartroute"
 )
 
@@ -24,8 +26,6 @@ import (
 // fails every model the same way: that batch doesn't count against the
 // models, and the round stands off for a while instead.
 
-var diagnoseOffUntil atomic.Int64
-
 func startSmartrouteDiagnoser() {
 	go func() {
 		for {
@@ -37,14 +37,15 @@ func startSmartrouteDiagnoser() {
 
 func diagnoseBatch() {
 	now := time.Now()
-	if until := diagnoseOffUntil.Load(); until > now.UnixMilli() {
-		return
-	}
 	entries := smartroute.Open().Snapshot(now)
 	batch := make([]smartroute.SnapshotEntry, 0, smartroute.DiagnoseBatch)
 	for i := range entries {
 		e := entries[i]
 		if e.State != smartroute.Diagnosing {
+			continue
+		}
+		// 供应商页没勾的不测：它不会进路由组，测了只是白花额度
+		if !provider.Checked(e.Provider + "/" + e.Model) {
 			continue
 		}
 		// tried within the last two rounds: let it be
@@ -66,83 +67,150 @@ func diagnoseBatch() {
 		wg.Add(1)
 		go func(e smartroute.SnapshotEntry) {
 			defer wg.Done()
-			if !diagnoseOne(e.Provider, e.Model) {
-				atomic.AddInt32(&bad, 1)
-			}
+			diagnoseOne(e.Provider, e.Model)
+			atomic.AddInt32(&bad, 0)
 			atomic.AddInt32(&total, 1)
 		}(e)
 	}
 	wg.Wait()
 
-	// a whole batch the same way, and not a model's own answer: hold off
-	if total >= 3 && bad == total {
-		diagnoseOffUntil.Store(time.Now().Add(10 * time.Minute).UnixMilli())
-	}
+	// 整批都失败不再停整轮：每个模型自己进 30 秒冷却，节奏已经由它控制，
+	// 停了这一轮反而让「诊断中」看起来卡死
+	_ = bad
+	_ = total
 }
 
-// diagnoseOne asks the gateway for the smallest streamed answer and records
-// what it took. It returns false when the whole gateway refused (the batch
-// is then held off), true for anything the model itself answered.
-func diagnoseOne(providerID, modelID string) bool {
-	body, _ := json.Marshal(map[string]any{
-		"model":      providerID + "/" + modelID,
-		"messages":   []map[string]string{{"role": "user", "content": "ok"}},
-		"max_tokens": 1,
-		"stream":     true,
-	})
-	start := time.Now()
-	req, err := http.NewRequest("POST", "http://"+gateway.DefaultAddr+"/v1/chat/completions", strings.NewReader(string(body)))
+// diagnoseOne 模拟一次 agent 请求：打 magpie 自己的 /v1/chat/completions，
+// model 就是列表里那个全名（workbuddy-ai/xxx），前缀由 magpie 分派给供应商。
+// 不自己拼 "provider/model"（会变成双前缀），也不调供应商的测试接口。
+func diagnoseOne(providerID, modelID string) (bool, int, int64, float64, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	// max_tokens 给到 64：太少算不出速度（只有 1 个块就没有"每秒多少块"）。
+	// 诊断要的是「这个模型现在能不能用、多快」，多花几十个 token 是值得的。
+	// 用全名问网关：裸名会让它按名字随便挑一个供应商，两个供应商有同名模型时
+	// 测的就不是这一家了
+	full := providerID + "/" + modelID
+	// stream_options 让守规矩的上游在最后一块报 usage（真实 token 数）：
+	// 有的免费上游只回一块，数块数算不出速度
+	body := fmt.Sprintf(`{"model":%q,"stream":true,"max_tokens":64,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"ping"}]}`, full)
+	req, err := http.NewRequestWithContext(ctx, "POST", "http://"+gateway.DefaultAddr+"/v1/chat/completions", strings.NewReader(body))
 	if err != nil {
-		return true
+		smartroute.Open().Failed(providerID, modelID, providerID, smartroute.Timeout("构造请求失败："+err.Error()))
+		return false, 0, 0, 0, "构造请求失败：" + err.Error()
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Magpie-Diagnose", "1")
-	client := &http.Client{Timeout: 45 * time.Second}
-	resp, err := client.Do(req)
+	start := time.Now()
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		smartroute.Open().Failed(providerID, modelID, "无法连接网关："+err.Error(), true)
-		return true
+		// 探针被切断（连接中断、上下文取消）不算模型失败；连不上/超时才算
+		smartroute.Open().Failed(providerID, modelID, providerID, smartroute.FromError(err))
+		return false, 0, 0, 0, err.Error()
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode >= 400 {
-		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 600))
-		msg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(detail)))
-		// 4xx is about the configuration or the model, not this attempt:
-		// keep the words, don't strike the model out
-		smartroute.Open().Failed(providerID, modelID, msg, resp.StatusCode >= 500)
-		return resp.StatusCode < 500
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		smartroute.Open().Failed(providerID, modelID, providerID, smartroute.Classify(resp.StatusCode, resp.Header, b))
+		return false, resp.StatusCode, time.Since(start).Milliseconds(), 0, strings.TrimSpace(string(b))
 	}
-
-	ttftMs := 0.0
-	tokens := 0
-	lines := 0
-	reader := bufio.NewReader(resp.Body)
+	// 第一条 data: 是首字；之后每块算一次输出，块数 / 生成耗时 = 速度
+	br := bufio.NewReader(resp.Body)
+	var ttft time.Time
+	var last time.Time
+	chunks := 0
+	tokensSeen := 0
+	bodyBytes := 0
+	var readErr error
 	for {
-		line, readErr := reader.ReadString('\n')
+		line, err := br.ReadString('\n')
 		if strings.HasPrefix(line, "data:") {
-			lines++
-			if ttftMs == 0 && lines > 0 {
-				ttftMs = float64(time.Since(start).Milliseconds())
+			now := time.Now()
+			if ttft.IsZero() {
+				ttft = now
 			}
-			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if payload != "" && payload != "[DONE]" {
-				tokens++
-			}
+			last = now
+			chunks++
 		}
-		if readErr != nil {
+		// 非流式上游一次回一段 JSON，没有 data: 行，token 数在那里面
+		if n := completionTokens(line); n > 0 {
+			tokensSeen = n
+		}
+		bodyBytes += len(line)
+		if err != nil {
+			if err != io.EOF {
+				readErr = err
+			}
 			break
 		}
 	}
-	totalMs := float64(time.Since(start).Milliseconds())
-	if lines == 0 {
-		smartroute.Open().Failed(providerID, modelID, "网关没有返回内容", false)
-		return true
+	// 一个字都没读到就断了：这次检测做废，既不记失败也不假装成功
+	if readErr != nil && chunks == 0 {
+		f := smartroute.FromError(readErr)
+		smartroute.Open().Failed(providerID, modelID, providerID, f)
+		return false, resp.StatusCode, time.Since(start).Milliseconds(), 0, readErr.Error()
+	}
+	total := time.Since(start).Milliseconds()
+	ttftMs := int64(0)
+	if !ttft.IsZero() {
+		ttftMs = ttft.Sub(start).Milliseconds()
+	}
+	if chunks == 0 {
+		// 一个 data: 都没有：这不是 SSE，整段一次回来的。首字就是等它
+		// 回来的时间，速度用它自报的 token 数算（kiro 走 anthropic 协议，
+		// 回的是整段 JSON，之前这里空着，模型就永远停在「检测中」）
+		ttftMs = total
+	}
+	// 首块之后才算 token；块间隔太短（一次性回来）就不报速度，免得写成离谱的几千。
+	// 单块最多算 512 token：有的上游把整段答案拆成上千个小块一瞬间吐完，
+	// 那样算出来的「tok/s」是假的（历史数据里出现过 9000）。
+	// 分块的块数就是个近似：有的上游把整段答案拆成上千个小块，有的只回
+	// 一块。上游报了 usage 的 token 数就用它，没有再用块数；连块都没分时
+	// 退到总耗时，至少给个数（用户：测试要能测出速度）。
+	count := chunks - 1
+	if tokensSeen > count {
+		count = tokensSeen
+	}
+	if count <= 0 && bodyBytes > 0 {
+		// 一块都没分、也不报 usage：按 4 字节≈1 token 估一个，总比「—」强，
+		// 反正只会用来给速度分档（ponytail: 粗略估算，接得上真实 usage 就别用）
+		count = bodyBytes / 4
+	}
+	span := last.Sub(ttft)
+	if last.IsZero() || span < 100*time.Millisecond {
+		span = time.Duration(total) * time.Millisecond
 	}
 	tps := 0.0
-	if totalMs > ttftMs && tokens > 1 {
-		tps = float64(tokens-1) / ((totalMs - ttftMs) / 1000)
+	if count > 0 && span > 0 {
+		n := float64(count)
+		if n > 512 {
+			n = 512
+		}
+		tps = n / span.Seconds()
 	}
-	smartroute.Open().Succeeded(providerID, modelID, ttftMs, tps, totalMs)
-	return true
+	smartroute.Open().Succeeded(providerID, modelID, providerID, float64(ttftMs), tps, float64(total))
+	return true, resp.StatusCode, total, tps, ""
+}
+
+// completionTokens reads the token count an upstream puts in its stream's
+// usage block: {"usage":{"completion_tokens":64,...}}. 0 when it says none.
+func completionTokens(line string) int {
+	const key = `"completion_tokens":`
+	i := strings.Index(line, key)
+	if i < 0 {
+		return 0
+	}
+	rest := strings.TrimSpace(line[i+len(key):])
+	j := 0
+	for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+		j++
+	}
+	if j == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(rest[:j])
+	if err != nil {
+		return 0
+	}
+	return n
 }

@@ -1223,7 +1223,7 @@ func (s *Server) restAfter(c candidate, status int, header http.Header, body []b
 	// the smart routing page: a failure it can count, or one that is the
 	// configuration's (4xx) and only keeps its words
 	if c.p.ID != "" && c.model != "" && status >= 400 {
-		smartroute.Open().Failed(c.p.ID, c.model, reasonOf(status, body), status >= 500)
+		smartroute.Open().Failed(c.p.ID, c.model, c.rest, smartroute.Classify(status, header, body))
 	}
 	return s.restAfterMarked(c, status, header, body, openRouterSharedPool(body))
 }
@@ -2145,6 +2145,17 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 				l.bal, l.balUnit, l.balIn = b, bu, whose+"\x00"+bu
 			}
 			wg.lefts[c.allowanceKey()] = l
+			// the smart routing page's list enjoys the same numbers: when
+			// this model's allowance renews next, soonest first
+			var soon int64
+			for _, t := range l.soon {
+				if !t.IsZero() && (soon == 0 || t.Unix() < soon) {
+					soon = t.Unix()
+				}
+			}
+			if soon > 0 {
+				smartroute.Open().SetSoon(c.p.ID, c.model, soon)
+			}
 		}
 	}
 	if len(cs) < 2 {

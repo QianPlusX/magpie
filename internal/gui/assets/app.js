@@ -4319,6 +4319,12 @@ async function load(again) {
     loadInstalls();
     // the Providers page made ready behind the one shown (#1519)
     if (mode !== "panel" && !(view === "providers" || providersPage(view))) prefetchProviders();
+    // 智能路由的状态与速度也一并预读：供应商弹窗打开时芯片上的球与 tok/s 立刻就在，
+    // 不必等那一页自己发一次请求（用户：状态球要很久才显示）
+    if (mode !== "panel" && !srSpeedAsked) {
+      srSpeedAsked = true;
+      refreshSrSpeed().then(() => { if (editing) draw(); }).catch(() => {});
+    }
     if (mode === "panel") { renderPanelQuota(true); if (!early) panelQuotasNow(again); panelAccounts(); }
     // an open provider editor is someone typing: coming back to the window
     // must not rebuild it under them
@@ -4386,6 +4392,9 @@ function updatePath(p) {
 // for good (Settings), or for this version (its ×, or a right-click), until
 // a newer one is out. magpie still downloads it and puts it in on quitting.
 async function renderUpdateBadge() {
+  // 移动端封装：magpie 打包在 APK 里，不能自我替换，顶部的「更新」入口
+  // 点开只会去下载一个用不上的包（用户：去掉 Magpie 内的更新）
+  { const pill = $("#update"); if (pill) pill.hidden = true; return; }
   const b = $("#update"), label = b.querySelector("span");
   const u = await api(updatePath("update")).catch(() => null);
   if (u) updateLast = u, u.at = Date.now();
@@ -10921,6 +10930,26 @@ const modelTests = {};
 
 // testsOn: a provider's tests under way, by run; Stop ends them on the server too (RIck)
 const testsOn = {};
+// 智能路由量过的速度与状态，按 "provider/model" 索引：供应商弹窗的模型芯片读它，
+// 这样「测试模型」和「诊断」看的是同一份数，测完立刻就在芯片上。
+// var 而不是 let：页面初始化可能先渲染过一次供应商列表，那时 let 还在死区，
+// 一引用就 ReferenceError，列表会画到一半停住（就是「点不开」那个样子）
+var srSpeed = {};
+var srState = {};
+var srSpeedAsked = false;
+async function refreshSrSpeed() {
+  try {
+    const j = await api("smartroute");
+    const m = {}, st = {};
+    for (const e of (j?.entries || [])) {
+      const k = e.provider + "/" + e.model;
+      if (e.tps) m[k] = e.tps;
+      if (e.state) st[k] = e.state;
+    }
+    srSpeed = m;
+    srState = st;
+  } catch (e) { /* gateway not up yet */ }
+}
 async function provTest(id, body) {
   const run = Math.random().toString(36).slice(2), ac = new AbortController(), on = testsOn[id] ||= new Map();
   on.set(run, ac);
@@ -10991,17 +11020,71 @@ function emptyModelsHint(p) {
   if (providers?.fetching && !p.fetched && !p.listError) return "Asking your resource for its deployments with this key…";
   return "No deployments came back for this key. Fetch models again, or type a deployment's name as a model id.";
 }
+// 智能路由的实时状态：供应商页的模型 chip 也挂同一颗球，和路由页一个口径
+let smartLive = null;
+function applySmartLive() {
+  for (const c of document.querySelectorAll(".mchip[data-pid]")) {
+    const dot = c.querySelector(":scope > .ldot");
+    if (!dot) continue;
+    const got = smartLive?.[c.dataset.pid + "/" + c.dataset.mid];
+    dot.className = "ldot " + (!got ? "" : got.cls);
+    c.title = got ? (c.title || c.dataset.mid) : c.title;
+  }
+}
+async function loadSmartLive() {
+  try {
+    const r = await fetch("/api/smartroute");
+    if (!r.ok) return;
+    const j = await r.json();
+    const m = {};
+    for (const e of j.entries || []) {
+      const cls = e.state === "candidate" ? "ok"
+        : e.state === "diagnosing" ? "wait"
+        : e.state === "excluded" ? "off" : "bad";
+      m[e.provider + "/" + e.model] = { cls, state: e.state };
+    }
+    smartLive = m;
+    applySmartLive();
+  } catch (e) { /* 页面不在这台 magpie 上就算了 */ }
+}
+loadSmartLive();
+setInterval(loadSmartLive, 15000);
+
 function renderModels(p) {
+  // 量过的速度与状态在启动时就预读了（prefetchProviders）；万一还没到，这里补一次
+  if (!srSpeedAsked) { srSpeedAsked = true; refreshSrSpeed().then(() => draw()).catch(() => {}); }
   // a chip's dot: how its model answered, when it has been asked
   const tested = (c, id) => {
-    const got = modelTests[p.id];
-    if (!got || !(id in got)) return;
-    const x = got[id];
-    c.append(el("span", "tdot " + (!x ? "wait" : x.ok ? "ok" : "bad")));
-    // the API it was asked on said, where the answer says (01huadalang:
-    // 右键选择测试只能测试出是不是通的，不能说什么协议是通的)
-    const via = x?.protocol ? apiLabel(x.protocol) : "";
-    c.title = !x ? t("Testing…") : x.ok ? (via ? t("Answered via {api} in {took}", { api: via, took: ledTook(x.ms) }) : t("Answered in {took}", { took: ledTook(x.ms) })) : (via ? via + " · " : "") + (x.status ? x.status + " · " : "") + x.error;
+    const got = modelTests[p.id], asked = !!got && id in got, ref = p.id + "/" + id;
+    let testTps = 0;
+    if (asked) {
+      const x = got[id];
+      c.append(el("span", "tdot " + (!x ? "wait" : x.ok ? "ok" : "bad")));
+      // the API it was asked on said, where the answer says (01huadalang:
+      // 右键选择测试只能测试出是不是通的，不能说什么协议是通的)
+      const via = x?.protocol ? apiLabel(x.protocol) : "";
+      c.title = !x ? t("Testing…") : x.ok ? (via ? t("Answered via {api} in {took}", { api: via, took: ledTook(x.ms) }) : t("Answered in {took}", { took: ledTook(x.ms) })) : (via ? via + " · " : "") + (x.status ? x.status + " · " : "") + x.error;
+      if (x?.ok && x.tps) testTps = x.tps;
+    } else {
+      // 还没在这张页面上测过：智能路由已经知道的就先显示（不参与的不算可用/不可用）
+      const st = srState[ref];
+      if (st && st !== "excluded") {
+        c.append(el("span", "tdot " + (st === "candidate" ? "ok" : st === "diagnosing" ? "wait" : "bad")));
+        c.title = st === "candidate" ? t("Smart routing: available")
+          : st === "diagnosing" ? t("Smart routing: not tested yet")
+          : st === "cooling" ? t("Smart routing: cooling down after a failure")
+          : st === "busy" ? t("Smart routing: too many requests at once")
+          : t("Smart routing: switched off after repeated failures");
+      }
+    }
+    // 输出速度：先看这次测试自己的结果（刚测完就用它，不必等 /api/smartroute），
+    // 没有再用智能路由记下的
+    const tps = testTps || srSpeed[ref];
+    if (tps) {
+      const sp = el("span", "badge speed", tps.toFixed(1) + " tok/s");
+      sp.title = t("Output speed, as the smart routing page measured it");
+      c.append(sp);
+    }
   };
   // a chip's right-click (or the menu key) tests that model alone: Test models
   // asks every one, and a list of many takes a while (yonghe, Discord). A
@@ -11162,6 +11245,9 @@ function renderModels(p) {
       if (picksOnly && !on) { unpicked++; continue; }
       if (shown >= 80 && !f && !showAll && !on) { hidden++; continue; }
       const c = el("button", "mchip pick" + (on ? " on" : served.has(m.id) ? " auto" : "") + (noAPI(m) ? " noapi" : ""));
+      c.dataset.pid = p.id;
+      c.dataset.mid = m.id;
+      // 状态球只剩 tested() 在速度前那一颗：同一行两颗球看着像两个状态
       c.append(el("span", "", m.name && m.name !== m.id ? m.name : m.id));
       const tell = tellTag(tells.get(m.id));
       if (tell) c.append(tell);
@@ -11198,9 +11284,12 @@ function renderModels(p) {
       // becomes the only pick (#681). The last unpicked leaves none, not
       // the vendor's list again (#1831, kchen0x)
       c.onclick = () => {
+        // 本来就在看全量（一个都没勾）时，勾第一个不该把列表收成「只显示勾选」：
+        // 点一下模型，其余模型全消失太突兀。本来只看勾选时，也不展开。
+        const wasAll = !draft.chosen.length;
         draft.chosen = on ? draft.chosen.filter((x) => x !== m.id) : [...draft.chosen, m.id];
         draft.none = true;
-        unpickedShown = p.id;
+        if (wasAll) unpickedShown = p.id;
         draw();
       };
       chips.append(c);
@@ -11766,6 +11855,7 @@ function renderModels(p) {
     try {
       const r = await provTest(p.id, { ...asTyped(), test: ids });
       r.results.forEach((x, i) => { got[ids[i]] = x; });
+      await refreshSrSpeed();
       const i = r.results.findIndex((x) => !x.ok), x = r.results[i], bad = r.results.filter((x) => !x.ok).length;
       status(x ? t("{n} of {all} models didn't answer; {model}: {error}", { n: bad, all: ids.length, model: ids[i], error: (x.status ? x.status + " · " : "") + x.error }) : t("All {n} models answered", { n: ids.length }), x ? "err" : "ok");
     } catch (e) { delete modelTests[p.id]; testErr(e); }
@@ -11778,6 +11868,7 @@ function renderModels(p) {
     draw();
     try {
       const r = await provTest(p.id, { ...asTyped(), test: [id], ...(as ? { as } : {}) });
+      await refreshSrSpeed();
       const x = got[id] = r.results[0];
       const via = x.protocol ? apiLabel(x.protocol) : "";
       const error = (x.status ? x.status + " · " : "") + x.error;
@@ -11955,8 +12046,15 @@ function renderRouting(p) {
     const cur = routingsOf(p).find(([id]) => id === routingNow()) || ROUTINGS[0];
     rHint.textContent = (ROUTINGS.includes(cur) ? t(cur[2]) : cur[2]) + own(cur[0]);
     rUnsaved.hidden = routingNow() === (p.routing || "");
+    // 选智能路由时原版（rotation 插件）的其余策略不出现，它专属的「被限流时」
+    // 与「会话保持」也一并收起：智能路由自己决定落位与留在哪个账号
+    // （用户：选择智能路由时应该只有一个智能路由）
+    const smart = routingNow() === "";
+    const opts = [...rPick.querySelectorAll(":scope > .opt")];
+    routingsOf(p).forEach(([id], i) => { if (opts[i]) opts[i].hidden = smart && ROTATION.has(id); });
     // in turn and by weight go round already
-    kLabel.hidden = kWrap.hidden = routingNow() === "rotate" || routingNow() === "weight";
+    kLabel.hidden = kWrap.hidden = smart || routingNow() === "rotate" || routingNow() === "weight";
+    if (sLabel) sLabel.hidden = sWrap.hidden = smart;
     // each key's or account's weight shows beside it while by weight
     for (const l of document.querySelectorAll(".accts")) if (l.dataset.provider === p.id) l.classList.toggle("weighted", routingNow() === "weight");
   };
@@ -11987,10 +12085,11 @@ function renderRouting(p) {
   sRow.append(sPick, sUnsaved);
   const sWrap = el("div");
   sWrap.append(sRow, sHint);
+  const sLabel = el("label", "", t("Stays"));
   drawRouting();
   drawSink();
   drawStays();
-  return [el("label", "", t("Routing")), rWrap, kLabel, kWrap, el("label", "", t("Stays")), sWrap];
+  return [el("label", "", t("Routing")), rWrap, kLabel, kWrap, sLabel, sWrap];
 }
 
 // renderFallback: where requests go when this provider can't take them —

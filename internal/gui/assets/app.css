@@ -3539,6 +3539,11 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .mchip .tdot.ok { background: var(--green); }
 .mchip .tdot.bad { background: var(--red); -webkit-mask: var(--x-mark) center / contain no-repeat; mask: var(--x-mark) center / contain no-repeat; border-radius: 0; transform: scale(1.5); }
 .mchip .tdot.wait { animation: tdot 1s ease-in-out infinite alternate; }
+.mchip .ldot { width: 6px; height: 6px; border-radius: 50%; flex: none; display: none; }
+.mchip .ldot.ok { display: block; background: var(--green); }
+.mchip .ldot.bad { display: block; background: var(--red); }
+.mchip .ldot.wait { display: block; background: #3b82f6; animation: tdot 1s ease-in-out infinite alternate; }
+.mchip .ldot.off { display: block; background: var(--faint); }
 @keyframes tdot { to { opacity: .25; } }
 .mchips .hint, .mfoot .hint { font-size: 11px; color: var(--faint); align-self: center; line-height: 27px; }
 /* the foot of a long list: draws the models left out of it (#685) */

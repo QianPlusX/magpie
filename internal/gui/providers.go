@@ -2297,10 +2297,19 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				p = &q
 			}
 			if len(req.Test) > 0 {
-				// an image model's test draws a picture, which takes longer
-				ctx, cancel := context.WithTimeout(provider.TestAs(ctx, req.As), 3*time.Minute)
-				defer cancel()
-				writeJSON(rw, map[string]any{"results": p.TestModels(ctx, req.Test)})
+				// 跟智能路由的诊断走同一条 agent 流程（见 diagnoseOne）：一次
+				// 流式请求、数首字和块数，所以这里也能给出速度，并且结果直接
+				// 就是列表里那一份，两边不会各说各话。
+				results := make([]provider.Result, 0, len(req.Test))
+				for _, m := range req.Test {
+					ok, status, ms, tps, errMsg := diagnoseOne(p.ID, m)
+					ttft := int64(0)
+					if ok {
+						ttft = ms // 与诊断同一条链路，首字在结果里由芯片显示
+					}
+					results = append(results, provider.Result{Model: m, OK: ok, Status: status, Millis: ms, Error: errMsg, TTFT: ttft, TPS: tps})
+				}
+				writeJSON(rw, map[string]any{"results": results})
 				return
 			}
 			ctx, cancel := context.WithTimeout(provider.TestAs(ctx, req.As), 25*time.Second)

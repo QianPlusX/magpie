@@ -25,9 +25,9 @@ magpie.plugin("routing", (ctx) => {
       <button class="text rt-newgroup" id="rtNewGroup" type="button" data-feature="groups" data-tt="Make a routing group of any models you like — agents pick it as one model"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg><span data-t>New group</span></button>
       <button class="text rt-mask" id="rtMask" aria-pressed="false" data-tt="Mask the accounts on every page — email addresses and account names — for a screenshot to share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg><span data-t>Hide accounts</span></button></div>
     <section class="rt" id="rt"></section>
+    <div class="rt-more" id="rtMore"></div>
     <div class="rt-tabs" id="rtTabs"><button type="button" data-rtab="classic" class="on">原版路由</button><button type="button" data-rtab="smart">智能路由</button></div>
     <section class="rt-smart" id="rtSmart" hidden></section>
-    <div class="rt-more" id="rtMore"></div>
 `,
     // once the window's scripts have all run: the page it opens on is
     // shown by then, so the first draw is of a page in sight (WebKit
@@ -5196,6 +5196,12 @@ function routingPage(part) {
   gsec.append(gHead, gFound, gNames, gList, gOff, pHead, pList);
   // after the requests: a request picked in the list plays on the stage,
   // so the list sits right under it
+  // 原版/智能 两个 tab 跟在请求列表后面，智能列表也在这里，
+  // 路由组（gsec）才让位
+  const rtTabsEl = $("#rtTabs"), rtSmartEl = $("#rtSmart");
+  if (rtTabsEl) more.append(rtTabsEl);
+  if (rtSmartEl) more.append(rtSmartEl);
+  gsec.id = "rtGroups";
   more.append(gsec);
   const ROUTE_OPTS = [["", "Smart"], ["order", "In order"], ["drain", "Until used up"], ["rotate", "In turn"], ["usage", "Least used"], ["pace", "Use before expiry"], ["free", "Free first"], ["fast", "Speed first"]];
   // a group may also be routed by hand: every request to the member the
@@ -5550,7 +5556,10 @@ function routingPage(part) {
   }
   function drawGroups() {
     groupsQuotas = typeof quotas === "undefined" ? undefined : quotas;
-    const all = groups.groups.filter((g) => !g.hidden), hidden = groups.groups.filter((g) => g.hidden);
+    // 智能路由组是智能路由页自己的入口：原版路由和智能路由同时只能开一个，
+    // 把它列在原版路由的组里，会让人以为在这里配的就是智能路由
+    const isSmart = (g) => String(g.id).replace(/^group\//, "") === "smart";
+    const all = groups.groups.filter((g) => !g.hidden && !isSmart(g)), hidden = groups.groups.filter((g) => g.hidden);
     const words = gQ.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
     // the group being changed stays, whatever the filter
     const shown = words.length ? all.filter((g) => gEdit?.id === g.id || groupMatches(g, words)) : all;
@@ -8161,24 +8170,45 @@ function smartRoutePage() {
 .rt-tabs{display:flex;gap:8px;margin:20px 0 16px}
 .rt-tabs button{padding:5px 14px;border-radius:999px;border:1px solid rgba(128,128,128,.45);background:none;color:inherit;font:inherit;font-size:13px;cursor:pointer;opacity:.6}
 .rt-tabs button.on{opacity:1;font-weight:600;border-color:currentColor}
-.rt-sub{display:flex;gap:6px;overflow-x:auto;margin:0 0 12px;padding-bottom:2px}
-.rt-sub button{white-space:nowrap;padding:4px 10px;border-radius:999px;border:1px solid rgba(128,128,128,.4);background:none;color:inherit;font:inherit;font-size:12px;cursor:pointer;opacity:.6}
+.rt-sub{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.rt-sub button{white-space:nowrap;flex:0 0 auto;padding:4px 10px;border-radius:999px;border:1px solid rgba(128,128,128,.4);background:none;color:inherit;font:inherit;font-size:12px;cursor:pointer;opacity:.6}
 .rt-sub button.on{opacity:1;border-color:currentColor}
 .sr-free{color:#1a7f37;font-size:11px;border:1px solid rgba(26,127,55,.45);border-radius:4px;padding:0 4px}
-.sr-item{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;padding:10px 12px;border:1px solid rgba(128,128,128,.25);border-radius:10px;margin-bottom:8px;font-size:13px}
+#rtMore.smart-on #rtGroups{display:none!important}
+.sr-item{display:block;padding:10px 12px;border:1px solid rgba(128,128,128,.25);border-radius:10px;margin-bottom:8px;font-size:13px}
 .sr-item .name{font-weight:600}
 .sr-item .meta{opacity:.65;font-size:12px}
 .sr-item .err{flex:1 1 100%;opacity:.75;font-size:12px;word-break:break-all}
 .sr-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
-.sr-ok{background:#2e9e5b}.sr-bad{background:#d64545}.sr-none{background:#8a8a8a}
+.sr-head{display:flex;align-items:center;gap:6px;margin-top:1px}
+.sr-head .name{flex:1 1 auto;min-width:0;word-break:break-all}
+.sr-head .sr-state{flex:0 0 auto;margin-left:8px;font-size:11px;padding:1px 8px;border-radius:999px;border:1px solid currentColor;opacity:.85;white-space:nowrap}
+.sr-head .sr-state.good{color:#4fbf7f}.sr-head .sr-state.warn{color:#e0b341}.sr-head .sr-state.bad{color:#e06c6c}
+.sr-head .sr-score{flex:0 0 auto;margin-left:6px;font-size:11px;padding:1px 7px;border-radius:999px;background:rgba(127,127,127,.16);color:inherit;opacity:.75;font-variant-numeric:tabular-nums}
+.sr-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px 10px;margin-top:8px}
+.sr-cell{min-width:0}
+.sr-cell b{display:block;font-size:10px;font-weight:400;opacity:.55;margin-bottom:1px}
+.sr-cell i{display:block;font-style:normal;font-size:12.5px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sr-alert{margin-top:8px;padding:5px 9px;border-radius:7px;font-size:12px;line-height:1.45;background:rgba(224,179,65,.12);border:1px solid rgba(224,179,65,.32);color:#e0b341;word-break:break-all}
+.sr-err{display:none;margin-top:6px;padding:5px 9px;border-radius:7px;font-size:11.5px;line-height:1.45;background:rgba(224,108,108,.10);border:1px solid rgba(224,108,108,.30);color:#e08d8d;word-break:break-all}
+.sr-item.open .sr-err{display:block}
+.sr-acts{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
+.sr-acts .sp{flex:1 1 auto}
+.sr-ok{background:#2e9e5b}.sr-bad{background:#d64545}.sr-none{background:#8a8a8a}.sr-run{background:#3b82f6}
+.sr-ok,.sr-run{animation:sr-pulse 1.6s ease-in-out infinite}
+@keyframes sr-pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.5);opacity:.5}}
 .sr-empty{opacity:.55;padding:18px 4px;font-size:13px}
 .sr-copy{border:1px solid rgba(128,128,128,.45);background:none;color:inherit;font:inherit;font-size:11px;padding:2px 8px;border-radius:6px;cursor:pointer}
-.sr-switch{margin-left:auto;font-size:12px;opacity:.8}
+.sr-switch{font-size:12px;opacity:.8}
 `;
   document.head.appendChild(css);
 
   const NAMES = { candidate: "候选中", diagnosing: "诊断中", cooling: "冷却中", busy: "并发满", disabled: "已禁用", excluded: "未参与" };
-  let cur = "candidate", entries = [], timer = null, show = "classic";
+  // 智能路由里只看这 5 个状态；未参与是另一条视图（不进路由）
+  const SUB = ["candidate", "diagnosing", "cooling", "busy", "disabled", "excluded"];
+  let cur = "candidate", entries = [], timer = null, view = "smart";
+  let show = "classic";
+  try { if (localStorage.getItem("mgsr.show") === "smart") show = "smart"; } catch (e) {}
 
   const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const num = (v, unit, digits) => (v ? (digits ? v.toFixed(digits) : Math.round(v)) + unit : "—");
@@ -8193,44 +8223,158 @@ function smartRoutePage() {
 
   var TYPE_NAMES = { text: "文本", image: "图片", audio: "语音", video: "视频", pdf: "文档" };
 
+  // 失败按原因分开说话：不同原因不一样的处理，用户要知道是等一会儿还是去改配置
+  var KIND_NAMES = {
+    rate_limited: "限流中", auth: "账号异常", no_model: "模型未提供",
+    bad_request: "请求被拒", content: "内容被拦", upstream: "上游故障", timeout: "超时测试",
+    interrupted: "中断"
+  };
+  var KIND_HINTS = {
+    rate_limited: "上游在限流", auth: "账号 key 或额度有问题",
+    no_model: "该供应商列表里没有这个模型", bad_request: "上游不接受这次请求的参数",
+    content: "内容被过滤", upstream: "上游服务出错", timeout: "请求超时或连不上",
+    interrupted: "回答到一半断开，不算这个模型的问题"
+  };
+
   function item(e) {
     const ok = e.state === "candidate";
-    const dot = ok ? "sr-ok" : (e.state === "diagnosing" || e.state === "excluded") ? "sr-none" : "sr-bad";
-    const label = ok ? "可用" : e.state === "excluded" ? "未参与" : e.state === "diagnosing" ? "未检测" : "不可用";
-    const parts = [`<span class="sr-dot ${dot}"></span>`, `<span class="name">${esc(e.model)}</span>`, `<span class="meta">${esc(e.provider)}</span>`];
-    if (e.free) parts.push(`<span class="sr-free">免费</span>`);
-    const types = Array.isArray(e.outputs) && e.outputs.length ? e.outputs : e.inputs;
-    if (Array.isArray(types) && types.length) {
-      parts.push(`<span class="meta">${esc(types.map((t) => TYPE_NAMES[t] || t).join("/"))}</span>`);
+    // 还没测过：诊断队列里排着，但一次也没发过请求（不是"冷却""禁用"那种结论）
+    const untried = !e.lastTry && !e.lastOk && !e.failures;
+    // 绿=在路由里用着，蓝=正在测（还没结论），灰=没参与/还没测，红=冷却/禁用/并发满
+    const dot = ok ? "sr-ok"
+      : e.state === "diagnosing" ? (untried ? "sr-none" : "sr-run")
+      : e.state === "excluded" ? "sr-none" : "sr-bad";
+    // 状态徽章跟真实情况走：正在被调用 vs 空闲可用 vs 从没试过
+    const kindName = e.kind ? KIND_NAMES[e.kind] : "";
+    const label = e.answering && ok ? "回答中"
+      : ok ? "可用"
+      : e.state === "diagnosing" ? (untried ? "未检测" : "检测中")
+      : e.state === "cooling" ? (kindName || "冷却中")
+      : e.state === "excluded" ? "未参与"
+      : e.state === "busy" ? "并发满"
+      : e.state === "disabled" ? (kindName || "已禁用") : (kindName || "异常");
+    const tone = ok ? "good"
+      : e.state === "diagnosing" ? "warn"
+      : e.state === "excluded" ? "" : "bad";
+
+    const cell = (k, v) => `<div class="sr-cell"><b>${k}</b><i>${esc(v)}</i></div>`;
+    const types = (Array.isArray(e.outputs) && e.outputs.length ? e.outputs : e.inputs || [])
+      .map((t) => TYPE_NAMES[t] || t).join("/") || "文本";
+    const ctx = e.context
+      ? (typeof tokenSize === "function" ? tokenSize(e.context) : Math.round(e.context / 1000) + "K")
+      : "—";
+    // 速度格始终占位：三列缺一格会让下一行的类型/上下文/倍率错位
+    const perf = `<div class="sr-metrics">`
+      + cell("首字", e.ttft ? e.ttft + "ms" : "—")
+      + cell("延迟", e.latency ? e.latency + "ms" : "—")
+      + cell("速度", e.tps ? e.tps.toFixed(1) + " tok/s" : "—")
+      + `</div>`;
+    const spec = `<div class="sr-metrics">`
+      + cell("类型", types)
+      + cell("上下文", ctx)
+      + cell("倍率", e.rate ? e.rate + "×" : "—")
+      + `</div>`;
+
+    // 告警条：失败次数、重试倒计时、恢复时间、额度重置，挤成一行
+    const notes = [];
+    // 未参与、以及仍在候选中（可正常用）的模型不该挂失败原因：
+    // 说它是「可用」又在下面写一条错，自相矛盾
+    if (e.state !== "excluded" && e.state !== "candidate" && e.kind && KIND_HINTS[e.kind]) notes.push(KIND_HINTS[e.kind]);
+    if (e.failures) notes.push("连续失败 " + e.failures);
+    if (e.state === "cooling" && e.restUntil) {
+      const left = Math.max(0, Math.round((new Date(e.restUntil) - Date.now()) / 1000));
+      notes.push(left + "s 后重试");
     }
-    if (e.context) parts.push(`<span class="meta">上下文 ${esc(Math.round(e.context / 1000))}k</span>`);
-    if (e.state === "candidate" || e.lastOk) {
-      parts.push(`<span class="meta">首字 ${num(e.ttft, "ms")}</span>`);
-      parts.push(`<span class="meta">速度 ${num(e.tps, " tok/s", 1)}</span>`);
-      parts.push(`<span class="meta">延迟 ${num(e.latency, "ms")}</span>`);
+    if (e.state === "disabled" && e.disabledUntil) {
+      const left = Math.max(0, Math.round((new Date(e.disabledUntil) - Date.now()) / 3600000));
+      notes.push(left ? left + " 小时后恢复" : "即将恢复");
     }
-    if (e.failures) parts.push(`<span class="meta">连续失败 ${esc(e.failures)}</span>`);
-    parts.push(`<span class="meta">${esc(label)}</span>`);
-    const sw = e.state === "excluded"
-      ? `<button class="sr-switch" data-act="include" data-p="${esc(e.provider)}" data-m="${esc(e.model)}">重新参与</button>`
-      : `<button class="sr-switch" data-act="exclude" data-p="${esc(e.provider)}" data-m="${esc(e.model)}">不参与</button>`;
-    let html = `<div class="sr-item">${parts.join("")}${sw}</div>`;
-    if (e.lastError) {
-      html = `<div class="sr-item">${parts.join("")}${sw}<div class="err">${esc(e.lastError)}</div><button class="sr-copy" data-copy="${esc(e.lastError)}">复制错误</button></div>`;
+    if (e.soon) {
+      const days = Math.round((e.soon * 1000 - Date.now()) / 86400000);
+      if (days >= 0) notes.push(days ? days + " 天后重置" : "今天重置");
     }
-    return html;
+    if (e.free) notes.push("免费");
+    const alert = notes.length
+      ? `<div class="sr-alert">⚠ ${notes.join(" · ")}</div>` : "";
+
+    const head = `<div class="sr-head"><span class="sr-dot ${dot}"></span>`
+      + `<span class="name">${esc(e.provider + "/" + e.model)}</span>`
+      + `<span class="sr-state ${tone}">${label}</span>`
+      + `<span class="sr-score">${scoreOf(e)}</span></div>`;
+
+    // 左：复制错误（次要）；右：结束冷却、不参与/重新参与（主操作）
+    const acts = [];
+    if (e.lastError) acts.push(`<button class="sr-copy" data-copy="${esc(e.lastError)}">复制错误</button>`);
+    acts.push(`<span class="sp"></span>`);
+    if (e.state === "cooling" || e.state === "disabled") {
+      acts.push(`<button class="sr-copy" data-act="reset" data-p="${esc(e.provider)}" data-m="${esc(e.model)}">结束冷却</button>`);
+    }
+    acts.push(e.state === "excluded"
+      ? `<button class="sr-copy" data-act="include" data-p="${esc(e.provider)}" data-m="${esc(e.model)}">重新参与</button>`
+      : `<button class="sr-copy" data-act="exclude" data-p="${esc(e.provider)}" data-m="${esc(e.model)}">不参与</button>`);
+
+    const err = e.lastError ? `<div class="sr-err">${esc(e.lastError)}</div>` : "";
+    return `<div class="sr-item">${head}${perf}${spec}${alert}${err}<div class="sr-acts">${acts.join("")}</div></div>`;
+  }
+
+  // 打分：倍率 30 + 首字 25 + 速度 30 + 上下文 15 + 整体延迟 10 = 110
+  function scoreOf(e) {
+    let s = 0;
+    const rate = typeof e.rate === "number" ? e.rate : null;
+    if (e.free && (rate === null || rate === 0)) s += 30;   // 0x：完全免费
+    else if (rate !== null && rate > 0) {
+      if (rate <= 0.5) s += 20;
+      else if (rate <= 1) s += 15;
+      else if (rate <= 3) s += 10;
+      else if (rate <= 5) s += 5;
+    }
+    const t = e.ttft || 0;
+    if (t > 0) s += t <= 1000 ? 25 : t <= 1500 ? 20 : t <= 2000 ? 15 : t <= 2500 ? 10 : t <= 3000 ? 5 : 0;
+    const v = e.tps || 0;
+    if (v > 100) s += 30;
+    else if (v >= 50) s += 25;
+    else if (v >= 40) s += 20;
+    else if (v >= 30) s += 15;
+    else if (v >= 20) s += 10;
+    else if (v >= 15) s += 5;
+    const c = e.context || 0;
+    if (c >= 900000) s += 15;
+    else if (c >= 500000) s += 10;
+    else if (c >= 100000) s += 5;
+    const l = e.latency || 0;
+    if (l > 0) s += l <= 1500 ? 10 : l <= 2000 ? 8 : l <= 2500 ? 6 : l <= 3000 ? 4 : l <= 4000 ? 2 : 0;
+    return s;
   }
 
   function draw() {
     const groups = {};
     for (const k of Object.keys(NAMES)) groups[k] = [];
     for (const e of entries) (groups[e.state] || groups.diagnosing).push(e);
-    const bar = Object.keys(NAMES).map((k) => `<button data-sub="${k}" class="${k === cur ? "on" : ""}">${NAMES[k]} ${groups[k].length}</button>`).join("");
+    for (const k of Object.keys(groups)) {
+      groups[k].sort((a, b) => scoreOf(b) - scoreOf(a)
+        || String(a.provider + a.model).localeCompare(String(b.provider + b.model)));
+    }
+    const bar = SUB.map((k) => `<button data-sub="${k}" class="${k === cur ? "on" : ""}">${NAMES[k]} ${groups[k].length}</button>`).join("");
     const list = (groups[cur] || []).map(item).join("");
-    smart.innerHTML = `<div class="rt-sub">${bar}</div>` + (list || `<div class="sr-empty">${cur === "diagnosing" ? "没有待诊断的模型" : "这里还没有模型"}</div>`);
+    const emptyText = cur === "excluded" ? "没有未参与的模型：点模型右边的「不参与」移出智能路由"
+      : cur === "diagnosing" ? "没有待诊断的模型" : "这里还没有模型";
+    const inner = `<div class="rt-sub">${bar}</div>` + (list || `<div class="sr-empty">${emptyText}</div>`);
+    smart.innerHTML = inner;
     smart.querySelectorAll("[data-sub]").forEach((b) => { b.onclick = () => { cur = b.dataset.sub; draw(); }; });
     smart.querySelectorAll("[data-act]").forEach((b) => {
       b.onclick = async () => {
+        if (b.dataset.act === "reset") {
+          b.disabled = true;
+          try {
+            const r = await fetch("/api/smartroute/reset", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ provider: b.dataset.p, model: b.dataset.m }),
+            });
+            const j = await r.json();
+            if (j && j.entries) { now = j.now || now; entries = j.entries; draw(); }
+          } catch (err) { b.textContent = "失败"; }
+          return;
+        }
         const excluded = b.dataset.act === "exclude";
         try {
           const r = await fetch("/api/smartroute/toggle", {
@@ -8251,15 +8395,24 @@ function smartRoutePage() {
 
   function pick(which) {
     show = which;
+    try { localStorage.setItem("mgsr.show", which); } catch (e) {}
     tabs.querySelectorAll("[data-rtab]").forEach((b) => b.classList.toggle("on", b.dataset.rtab === which));
     const smartOn = which === "smart";
-    // the stage (the live requests) stays: only the groups below give way
+    // 舞台与请求列表照常显示：智能路由只顶掉「路由组」那一节，
+    // 以及顶部跳过去/新建组的按钮。路由组那一节是之后才建的，
+    // 所以状态挂在容器上，由样式决定显示谁
     smart.hidden = !smartOn;
-    if (more) more.hidden = smartOn;
+    if (more) more.classList.toggle("smart-on", smartOn);
+    for (const id of ["rtGoGroups", "rtNewGroup"]) {
+      const b = document.getElementById(id);
+      if (b) b.hidden = smartOn;
+    }
     if (smartOn) { load(); }
   }
 
   tabs.querySelectorAll("[data-rtab]").forEach((b) => { b.onclick = () => pick(b.dataset.rtab); });
-  pick("classic");
+  pick(show);
   setInterval(() => { if (show === "smart" && !document.hidden) load(); }, 3000);
+  // 冷却/禁用的剩余时间是本地算的，光靠 3 秒一次的 load 会跳着走，单独每秒重绘
+  setInterval(() => { if (show === "smart" && !document.hidden) draw(); }, 1000);
 }

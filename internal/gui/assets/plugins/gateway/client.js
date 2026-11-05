@@ -482,7 +482,10 @@ function gatewayModels() {
   // no reasoning field (reasonless) offers none
   const offered = (m) => m.reasonless ? [] : m.kept?.length || m.given ? m.kept || [] : m.efforts || [];
   for (const p of providers.providers) { if (p.off) continue; for (const m of p.models) if (m.on) out.push({ id: `${p.id}/${m.id}`, name: m.name, provider: p, context: m.context, output: m.output, efforts: offered(m), images: !!m.images }); }
-  return out;
+  // 智能路由开着时它自己就是唯一入口：成员模型列在这里，agent 点名直连
+  // 就绕过了智能路由（选路、冷却、按账号失败），所以只留它一个
+  const smart = out.find((m) => m.group && String(m.id).replace(/^group\//, "") === "smart");
+  return smart ? [smart] : out;
 }
 
 // Connect is set up once and seldom looked at again, so it folds away under

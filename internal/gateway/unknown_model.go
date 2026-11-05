@@ -26,3 +26,15 @@ func unknownModel(asked, what string) string {
 	}
 	return msg
 }
+
+// notPicked is what a model the Providers page doesn't tick is told: magpie
+// knows it, it just isn't picked, and saying "knows no model" (as this was
+// first written) sent the reader looking for a catalog problem that wasn't
+// there — 4 个模型里有 3 个报 404 时看到的就是这句。
+func notPicked(asked string) string {
+	pid, model, ok := strings.Cut(asked, "/")
+	if !ok {
+		return fmt.Sprintf("%q is not picked on the Providers page: pick it there, then save, to serve it", asked)
+	}
+	return fmt.Sprintf("magpie knows %s but %q is not picked on the Providers page ( Providers → %s → Models): pick it there, then save, to serve it", asked, model, pid)
+}

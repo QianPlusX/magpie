@@ -648,7 +648,31 @@ func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider
 	}
 	placed(ms, out)
 	placed(ms, pl.unlisted)
+	// 智能路由按候选顺序一个个试：不再用原版那套（休息中的挪到最后、
+	// 只留一个快恢复的探针）。顺序就是页面上的分数顺序。
+	if g.ID == "smart" {
+		return keepOrder(out, pl)
+	}
 	return restLast(out, pl)
+}
+
+// keepOrder is restLast for the smart group: the models the smart page keeps
+// out are dropped, everything else stays where it is. The page's score order
+// is the order requests ask in (the user: 按顺序读取当前候选里的模型).
+func keepOrder(out []candidate, pl planned) ([]candidate, planned) {
+	out, pl = dropSmartExcluded(out, pl)
+	now := time.Now()
+	for i, c := range out {
+		if i >= len(pl.order) {
+			break
+		}
+		if r, ok := restingOf(c); ok {
+			pl.order[i].Rest = &r // said in the trace, not acted on
+		}
+		pl.order[i].Busy = 0
+		_ = now
+	}
+	return out, pl
 }
 
 // placed sets each of cs's place: where its member is in ms, the group's
@@ -1227,6 +1251,16 @@ func dropSmartExcluded(out []candidate, pl planned) ([]candidate, planned) {
 	keptW := make([]Weighed, 0, len(out))
 	for i, c := range out {
 		if store.ExcludedOrCooling(c.p.ID, c.model, now) {
+			continue
+		}
+		// 多账号供应商：只剔掉自己还在冷却的那个账号，同一模型的下一个账号
+		// 照常试（用户：第一个账号失败要自动尝试下一个，都失败才算失败）
+		if store.AccountCooling(c.p.ID, c.model, c.rest, now) {
+			continue
+		}
+		// 供应商页没勾的模型同样不参与：智能路由的候选池是从目录来的，
+		// 用户把某家全不选之后，池子里不该还留着它的模型。
+		if !provider.Checked(c.p.ID + "/" + c.model) {
 			continue
 		}
 		kept = append(kept, c)
