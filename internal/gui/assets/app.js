@@ -22640,7 +22640,8 @@ async function renderUpdate(r, u) {
 // a Daily check-in row per plugin that checks in itself (auth.checkin)
 function renderPluginCheckins(s) {
   const ps = s.checkinPlugins || [], tab = $("#warmTab-plugins");
-  tab.hidden = !ps.length;
+  // the tab stays while the light copy is on screen: the details follow
+  tab.hidden = !ps.length && !s.light;
   // one plugin checking in: its tab is its name, as a built-in's is
   tab.dataset.en = ps.length === 1 ? ps[0].name || ps[0].id : "Plugins";
   tab.textContent = t(tab.dataset.en);
@@ -22650,7 +22651,7 @@ function renderPluginCheckins(s) {
   const allWho = el("div", "who");
   allWho.append(el("div", "name", t("All daily check-ins")),
     el("div", "sub", t("Turn every plugin's daily check-in on or off at once")));
-  const allBox = el("div");
+  const allBox = el("div", "plug-all");
   const setAll = async (on) => {
     try {
       prefs = await writingPrefs(api("settings/plugin-checkins", { on }));
@@ -22666,7 +22667,8 @@ function renderPluginCheckins(s) {
     allBox.append(b);
   }
   all.append(allWho, allBox);
-  $("#pluginCheckinList").replaceChildren(all, ...ps.map((p) => {
+  const wait = s.light ? [el("div", "plug-wait")] : [];
+  $("#pluginCheckinList").replaceChildren(all, ...wait, ...ps.map((p) => {
     const row = el("div", "row pref");
     row.dataset.provider = p.id;
     const who = el("div", "who");

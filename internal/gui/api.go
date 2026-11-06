@@ -377,6 +377,9 @@ func currentFX() fxJSON {
 // settingsJSON is the Settings page: the two choices plus the facts it shows.
 type settingsJSON struct {
 	settings.Settings
+	// Light says the plugin details below are still coming (the page drew
+	// from the light copy first).
+	Light   bool   `json:"light,omitempty"`
 	Version string `json:"version"`
 	Dir     string `json:"dir"`     // where magpie keeps its files, as shown
 	Gateway string `json:"gateway"` // the local endpoint
@@ -828,6 +831,7 @@ func settingsStateLight(light bool) settingsJSON {
 	s.MiniMax = provider.HasMiniMax()
 	s.Qoder = provider.HasQoder()
 	if light {
+		s.Light = true
 		return s
 	}
 	s.WorkBuddyCheckins = provider.WorkBuddyCheckins()

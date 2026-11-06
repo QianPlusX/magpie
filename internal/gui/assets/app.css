@@ -4872,3 +4872,13 @@ body .row.agent .ag-prefs .row.pref .who { display: block; }
 .sess-tools .led-rename { flex: none; width: 180px; height: 26px; padding: 0 8px; border-radius: 7px; font-size: 12px; }
 /* Settings › About › Open-source licenses: the notices, as written */
 .notices-text { margin: 0; font: 11px/1.5 var(--code); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* the Plugins tab's "all on / all off": the same backing the Off/On strip
+   beside every row has, a gap between them, and a bar while the plugin
+   details are still coming */
+.plug-all { display: flex; flex-wrap: wrap; gap: 10px; }
+.plug-all .text.action { height: 26px; padding: 0 12px; border-color: transparent; background: var(--pill); color: var(--fg); font-size: 12.5px; }
+.plug-all .text.action:hover { border-color: transparent; background: var(--pill-hover); color: var(--fg); }
+.plug-wait { position: relative; height: 3px; margin: 12px 2px 4px; border-radius: 2px; background: var(--line-2); overflow: hidden; }
+.plug-wait::after { content: ""; position: absolute; top: 0; bottom: 0; width: 35%; border-radius: 2px; background: var(--accent); animation: plug-wait 1.1s ease-in-out infinite; }
+@keyframes plug-wait { from { left: -35%; } to { left: 100%; } }
