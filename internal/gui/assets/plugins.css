@@ -250,7 +250,7 @@ body.window .pm-manual { --bleed-l: 16px; }
    they'd take more than half of it, they move down under the name at full
    width instead of squeezing it into a column of letters (#mobile) */
 .pm-list .row.pm-row { flex-wrap: wrap; row-gap: 6px; }
-.pm-row .val { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 2px 4px; flex: 0 1 auto; max-width: 100%; margin-left: auto; }
+.pm-row .val { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 2px 4px; flex: 1 1 auto; max-width: 100%; min-width: 0; margin-left: auto; }
 /* a row's actions at 80% of the 44px touch target: three of them at full
    height read as fat blocks beside a two-line name on a phone */
 .pm-list .row.pm-row .val :is(button, .text) { height: 35px; min-height: 35px; padding-top: 0; padding-bottom: 0; line-height: 35px; }
