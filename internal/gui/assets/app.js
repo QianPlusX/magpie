@@ -22666,6 +22666,27 @@ function renderPluginCheckins(s) {
     b.onclick = () => setAll(on);
     allBox.append(b);
   }
+  // one press checks every account of every plugin in once now; no switch
+  // is touched (the light copy has no accounts yet, so it waits for them)
+  const accts = s.checkinAccounts || [];
+  if (accts.length) {
+    const now = el("button", "text action", t("Check in all now"));
+    now.onclick = async () => {
+      if (now.disabled) return;
+      now.disabled = true;
+      let ok = 0, bad = 0;
+      for (const [i, a] of accts.entries()) {
+        now.textContent = t("Checking in {i}/{n}…", { i: i + 1, n: accts.length });
+        try { await api("usage/checkin-account", { by: a.by || "", key: a.key }); ok++; }
+        catch (err) { bad++; }
+      }
+      now.disabled = false;
+      now.textContent = t("Check in all now");
+      status(bad ? t("{ok} checked in, {bad} failed", { ok, bad }) : t("{ok} accounts checked in", { ok }), bad ? "err" : "ok");
+      renderSettings();
+    };
+    allBox.append(now);
+  }
   all.append(allWho, allBox);
   const wait = s.light ? [el("div", "plug-wait")] : [];
   $("#pluginCheckinList").replaceChildren(all, ...wait, ...ps.map((p) => {
