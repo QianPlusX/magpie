@@ -759,7 +759,13 @@ func dropSettingsCache() {
 	settingsCache.mu.Unlock()
 }
 
-func settingsState() settingsJSON {
+func settingsState() settingsJSON { return settingsStateLight(false) }
+
+// settingsStateLight builds the page's state. `light` skips the parts that
+// have to walk every plugin (their check-in cards, the vision models, the
+// accounts they add): a cold pass over 29 plugins takes seconds on a phone,
+// and the page draws what it can from the light copy first.
+func settingsStateLight(light bool) settingsJSON {
 	s := settingsJSON{Settings: settings.Load(), Version: Version, Dir: tilde(settings.Dir()), Portable: settings.Portable() != "", Gateway: gateway.URL()}
 	s.AddrEnv = os.Getenv("MAGPIE_ADDR")
 	s.Log = tilde(applog.Current())
@@ -817,10 +823,17 @@ func settingsState() settingsJSON {
 	s.CodexAsyncHeld = agent.CodexAsyncHeld()
 	s.CodexCompactKeys = codexKeysText(agent.CodexCompactHeld(""))
 	s.CodexWindow = codexWindowUnder(s.Settings, agent.CodexModel(""))
-	s.WorkBuddy, s.WorkBuddyCheckins = provider.HasWorkBuddy(), provider.WorkBuddyCheckins()
-	s.Trae, s.TraeCheckins = provider.HasTrae(), provider.TraeCheckins()
-	s.MiniMax, s.MiniMaxCheckins = provider.HasMiniMax(), provider.MiniMaxCheckins()
-	s.Qoder, s.QoderCheckins = provider.HasQoder(), provider.QoderCheckins()
+	s.WorkBuddy = provider.HasWorkBuddy()
+	s.Trae = provider.HasTrae()
+	s.MiniMax = provider.HasMiniMax()
+	s.Qoder = provider.HasQoder()
+	if light {
+		return s
+	}
+	s.WorkBuddyCheckins = provider.WorkBuddyCheckins()
+	s.TraeCheckins = provider.TraeCheckins()
+	s.MiniMaxCheckins = provider.MiniMaxCheckins()
+	s.QoderCheckins = provider.QoderCheckins()
 	s.CheckinPlugins = provider.PluginCheckins()
 	s.CheckinAccounts = provider.CheckinAccounts()
 	s.VisionAuto, s.VisionModels, s.VisionMissing = gateway.AutoVision(), []modelRef{}, gateway.VisionMissing()
@@ -1416,6 +1429,10 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	builtinRoutes(mux)
 	mux.HandleFunc("GET /api/settings", func(rw http.ResponseWriter, r *http.Request) {
 		access.MigrateLegacyLANKeyBestEffort()
+		if r.URL.Query().Get("light") != "" {
+			writeJSON(rw, settingsStateLight(true))
+			return
+		}
 		if b := cachedSettings(); b != nil {
 			rw.Header().Set("Content-Type", "application/json")
 			_, _ = rw.Write(b)

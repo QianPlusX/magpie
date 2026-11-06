@@ -19488,8 +19488,17 @@ async function loadSettings() {
   const since = prefsWrites;
   if (fontList === null && !fontListError) loadFonts();
   if (window.bootPrefs?.omarchy && !barIcon) api("omarchy/widget").then((b) => { barIcon = b; renderBarIcon(); }).catch(() => {});
+  // the whole state costs a cold pass over every plugin (tens of seconds on a
+  // phone); the light copy draws the page at once and the full one fills in
+  // the check-in cards and the vision models after
+  const light = await api("settings?light=1").catch(() => null);
+  if (light && prefsSettled(since)) {
+    prefs = state.settings = light;
+    applyFeatures(light.builtins);
+    renderSettings();
+  }
   const s = await api("settings");
-  if (!prefsSettled(since) && prefs) return; // the save draws the page when it's in
+  if (!prefsSettled(since)) return; // the save draws the page when it's in
   // the state's copy too, which the other pages draw from (#1433)
   prefs = state.settings = s;
   applyFeatures(s.builtins);
@@ -22652,7 +22661,7 @@ function renderPluginCheckins(s) {
     }
   };
   for (const [label, on] of [[t("All on"), true], [t("All off"), false]]) {
-    const b = el("button", "text", label);
+    const b = el("button", "text action", label);
     b.onclick = () => setAll(on);
     allBox.append(b);
   }
