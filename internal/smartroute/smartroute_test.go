@@ -159,3 +159,77 @@ func TestOneAccountFailingLeavesTheModelRoutable(t *testing.T) {
 		t.Fatalf("另一个账号成功后应回候选中，实际 %+v", e)
 	}
 }
+
+func TestRecentAverageDropsTheOutliers(t *testing.T) {
+	// 十条：最大 6000 与最小 100 各一条被丢掉
+	e := &Entry{Recent: []Sample{
+		{TTFT: 900}, {TTFT: 6000}, {TTFT: 100}, {TTFT: 1000}, {TTFT: 1100},
+		{TTFT: 1200}, {TTFT: 1300}, {TTFT: 1400}, {TTFT: 1500}, {TTFT: 1600},
+	}}
+	got := e.average(func(s Sample) float64 { return s.TTFT })
+	want := (900.0 + 1000 + 1100 + 1200 + 1300 + 1400 + 1500 + 1600) / 8
+	if got != want {
+		t.Fatalf("ttft average = %v, want %v", got, want)
+	}
+	// 不足十条直接平均
+	short := &Entry{Recent: []Sample{{TTFT: 1000}, {TTFT: 3000}}}
+	if got, want := short.average(func(s Sample) float64 { return s.TTFT }), 2000.0; got != want {
+		t.Fatalf("short average = %v, want %v", got, want)
+	}
+}
+
+// 检测成功后窗口太小的模型自己退到「未参与」，不必手动一个个关。
+func TestSmallContextLeavesOnItsOwn(t *testing.T) {
+	s := tempStore(t)
+	join(s, Ref{Provider: "p", Model: "small"}, Ref{Provider: "p", Model: "big"})
+	s.SetContext("p", "small", 200_000)
+	s.SetContext("p", "big", 1_000_000)
+	for _, m := range []string{"small", "big"} {
+		s.Succeeded("p", m, "p", 900, 50, 1200)
+	}
+	states := map[string]State{}
+	for _, e := range s.Snapshot(time.Now()) {
+		states[e.Model] = e.State
+	}
+	if states["small"] != Excluded {
+		t.Fatalf("200K 窗口应自动未参与，实际 %s", states["small"])
+	}
+	if states["big"] != Candidate {
+		t.Fatalf("1M 窗口应留在候选，实际 %s", states["big"])
+	}
+}
+
+// 一个模型同时只跑一个探针：45 秒的诊断期内，每 5 秒一轮的批次不该再戳它。
+func TestOneProbeAtATime(t *testing.T) {
+	s := tempStore(t)
+	if !s.MarkTrying("p", "m") {
+		t.Fatal("第一次应拿到槽位")
+	}
+	if s.MarkTrying("p", "m") {
+		t.Fatal("探针未结束时不该再拿到")
+	}
+	s.DoneTrying("p", "m")
+	if !s.MarkTrying("p", "m") {
+		t.Fatal("释放后应能再拿")
+	}
+}
+
+// 额度快重置的模型要排在同样指标但没有窗口的模型前面：不用掉就作废。
+func TestSoonScoresHigher(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	mk := func(soon int64) SnapshotEntry {
+		return SnapshotEntry{Entry: &Entry{
+			Provider: "p", Model: "m", Rate: 0.5, Context: 1_000_000,
+			TTFT: 800, TPS: 60, Latency: 900, Soon: soon,
+		}}
+	}
+	base := ScoreAt(mk(0), now)
+	far := ScoreAt(mk(now.Add(60*24*time.Hour).Unix()), now)
+	near := ScoreAt(mk(now.Add(2*24*time.Hour).Unix()), now)
+	if far != base {
+		t.Fatalf("60 days out should not add points: %d vs %d", far, base)
+	}
+	if near != base+15 {
+		t.Fatalf("2 days out should add 15: got %d, want %d", near, base+15)
+	}
+}

@@ -40,23 +40,23 @@ type modelJSON struct {
 	Given   bool     `json:"given,omitempty"` // its levels aren't known: Efforts are those it can be given, Kept those it was
 	// Reasonless: the user said it takes no reasoning ask
 	// (provider.SetModelReasonless): none of Efforts is kept, and none is sent
-	Reasonless bool    `json:"reasonless,omitempty"`
+	Reasonless bool `json:"reasonless,omitempty"`
 	// Inputs and Outputs: what its source listed it takes and makes
 	// (text, image, audio…), for the smart routing page's type filter
-	Inputs  []string `json:"inputs,omitempty"`
-	Outputs []string `json:"outputs,omitempty"`
-	Images     bool    `json:"images"`              // agents are told it can see images
-	ImageSet   bool    `json:"imageSet,omitempty"`  // the user said so, rather than its vendor
-	Own        bool    `json:"ownImages,omitempty"` // its vendor's answer, which a staged Restore default shows
-	On         bool    `json:"on"`                  // exposed to agents
-	Best       bool    `json:"best,omitempty"`      // the newest of its family in the list: what Best in family serves (provider.NewestInFamily)
-	Context    int     `json:"context,omitempty"`   // the window agents are told: the user's, else Listed
-	Output     int     `json:"output,omitempty"`    // the reply limit agents are told: provider.ReplyLimit within Context (provider.OutputWithin)
-	Listed     int     `json:"listed,omitempty"`    // its window before the user's: its vendor's list's, else models.dev's
-	Max        int     `json:"max,omitempty"`       // the most its context may be set to, above Listed
-	Free       bool    `json:"free,omitempty"`      // costs the subscription nothing
-	Rate       float64 `json:"rate,omitempty"`      // the credits a request costs the subscription, as a multiple
-	RateWas    float64 `json:"rateWas,omitempty"`   // the rate before a discount running now
+	Inputs   []string `json:"inputs,omitempty"`
+	Outputs  []string `json:"outputs,omitempty"`
+	Images   bool     `json:"images"`              // agents are told it can see images
+	ImageSet bool     `json:"imageSet,omitempty"`  // the user said so, rather than its vendor
+	Own      bool     `json:"ownImages,omitempty"` // its vendor's answer, which a staged Restore default shows
+	On       bool     `json:"on"`                  // exposed to agents
+	Best     bool     `json:"best,omitempty"`      // the newest of its family in the list: what Best in family serves (provider.NewestInFamily)
+	Context  int      `json:"context,omitempty"`   // the window agents are told: the user's, else Listed
+	Output   int      `json:"output,omitempty"`    // the reply limit agents are told: provider.ReplyLimit within Context (provider.OutputWithin)
+	Listed   int      `json:"listed,omitempty"`    // its window before the user's: its vendor's list's, else models.dev's
+	Max      int      `json:"max,omitempty"`       // the most its context may be set to, above Listed
+	Free     bool     `json:"free,omitempty"`      // costs the subscription nothing
+	Rate     float64  `json:"rate,omitempty"`      // the credits a request costs the subscription, as a multiple
+	RateWas  float64  `json:"rateWas,omitempty"`   // the rate before a discount running now
 	// Load is how busy its plugin last said the model is, a percent, when
 	// that was within plugin.LoadFresh (magpie.load); nil when unknown
 	Load  *float64 `json:"load,omitempty"`
@@ -2300,15 +2300,27 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				// 跟智能路由的诊断走同一条 agent 流程（见 diagnoseOne）：一次
 				// 流式请求、数首字和块数，所以这里也能给出速度，并且结果直接
 				// 就是列表里那一份，两边不会各说各话。
-				results := make([]provider.Result, 0, len(req.Test))
-				for _, m := range req.Test {
-					ok, status, ms, tps, errMsg := diagnoseOne(p.ID, m)
-					ttft := int64(0)
-					if ok {
-						ttft = ms // 与诊断同一条链路，首字在结果里由芯片显示
-					}
-					results = append(results, provider.Result{Model: m, OK: ok, Status: status, Millis: ms, Error: errMsg, TTFT: ttft, TPS: tps})
+				// 并发测：75 个模型一个接一个要几分钟，按钮一直是「停止」。
+				// 每个探针本来就是独立的流式请求，串行没有任何理由；
+				// 真正的并发上限在网关那边按每个 key/账号的设置在排队。
+				results := make([]provider.Result, len(req.Test))
+				var wg sync.WaitGroup
+				sem := make(chan struct{}, providerTestAtOnce)
+				for i, m := range req.Test {
+					wg.Add(1)
+					go func(i int, m string) {
+						defer wg.Done()
+						sem <- struct{}{}
+						defer func() { <-sem }()
+						ok, status, ms, tps, errMsg := diagnoseOne(ctx, p.ID, m)
+						ttft := int64(0)
+						if ok {
+							ttft = ms // 与诊断同一条链路，首字在结果里由芯片显示
+						}
+						results[i] = provider.Result{Model: m, OK: ok, Status: status, Millis: ms, Error: errMsg, TTFT: ttft, TPS: tps}
+					}(i, m)
 				}
+				wg.Wait()
 				writeJSON(rw, map[string]any{"results": results})
 				return
 			}
@@ -3019,3 +3031,8 @@ func fetchedCount(p provider.Provider, ids int) int {
 	}
 	return ids
 }
+
+// providerTestAtOnce is how many of the Providers page's probes run at once.
+// The gate on a key or account is the gateway's (lanes, MaxConcurrency): this
+// only keeps one test button from opening a hundred sockets at once.
+const providerTestAtOnce = 16

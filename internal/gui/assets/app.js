@@ -5296,10 +5296,20 @@ function tellTag(tell) {
 // aren't marked, as nearly every model has one of those; nor is a name
 // that says it itself ("GPT-5.5 Mini (1M)", kept to tell it from another)
 function contextTag(n, name) {
-  if (!(n >= 1e6) || /\b\d+M\b/.test(name || "")) return null;
-  const m = n / 1e6;
-  const tag = el("span", "badge ctx", (Number.isInteger(m) ? m : m.toFixed(1)) + "M");
+  // 任何量级都标：只标 1M 的会让 200K/128K 的看起来没有窗口
+  if (!(n > 0)) return null;
+  const size = tokenSize(n);
+  // 名字里已经写着这个数（GLM-5.3-Flash 1M）就不再重复
+  if (name && name.includes(size)) return null;
+  const tag = el("span", "badge ctx", size);
   tag.title = t("holds {n} tokens", { n: n.toLocaleString(intlLang()) });
+  return tag;
+}
+
+// ctxUnknown：目录没写窗口的模型也占一格，页面上一眼看得出「不知道」而不是漏画
+function ctxUnknown() {
+  const tag = el("span", "badge ctx", "—");
+  tag.title = t("the vendor's list doesn't say how many tokens this model holds");
   return tag;
 }
 
@@ -7470,7 +7480,9 @@ function tokensTyped(s) {
   return n > 0 ? n : NaN;
 }
 function tokenSize(n) {
-  return n >= 1e6 && n % 1e6 === 0 ? n / 1e6 + "M" : n >= 1e3 && n % 1e3 === 0 ? n / 1e3 + "K" : String(n);
+  // 近似到一位小数：目录里的窗口是 1048576 这种二进制值，要求整除只会把原数吐出来
+  const r = (x) => String(Math.round(x * 10) / 10);
+  return n >= 1e6 ? r(n / 1e6) + "M" : n >= 1e3 ? r(n / 1e3) + "K" : String(n);
 }
 // samePrice: two prices alike in every part, their 1-hour cache writes and
 // long-context prices included
@@ -10934,20 +10946,28 @@ const testsOn = {};
 // 这样「测试模型」和「诊断」看的是同一份数，测完立刻就在芯片上。
 // var 而不是 let：页面初始化可能先渲染过一次供应商列表，那时 let 还在死区，
 // 一引用就 ReferenceError，列表会画到一半停住（就是「点不开」那个样子）
+// a time.Time with omitempty still comes out as 0001-01-01T00:00:00Z: it is
+// a struct, not the empty string omitempty skips
+function seenAt(v) { return typeof v === "string" && v ? !v.startsWith("0001-") : !!v; }
 var srSpeed = {};
 var srState = {};
+var srTrying = {};
 var srSpeedAsked = false;
 async function refreshSrSpeed() {
   try {
     const j = await api("smartroute");
-    const m = {}, st = {};
-    for (const e of (j?.entries || [])) {
+    const m = {}, st = {}, tr = {};
+    // measured：所有测过的模型（勾没勾都算，失败也算），供应商页的叉/球重启后靠它恢复
+    for (const e of (j?.measured || j?.entries || [])) {
       const k = e.provider + "/" + e.model;
       if (e.tps) m[k] = e.tps;
-      if (e.state) st[k] = e.state;
+      // 未参与的模型也是「测过」的：重启后球要靠这三位一起决定
+      if (e.state) st[k] = { state: e.state, ok: seenAt(e.lastOk), tested: seenAt(e.lastOk) || seenAt(e.lastTry) };
+      if (e.trying) tr[k] = true;
     }
     srSpeed = m;
     srState = st;
+    srTrying = tr;
   } catch (e) { /* gateway not up yet */ }
 }
 async function provTest(id, body) {
@@ -10963,6 +10983,10 @@ function testBtns(id) {
   const on = testsOn[id]?.size;
   for (const b of document.querySelectorAll("[data-tests]")) if (b.dataset.tests === id) b.textContent = on ? t("Stop") : b.dataset.label, b.title = on ? "" : b.dataset.tip;
 }
+// modelTestAtOnce: how many of the Providers page's per-model test calls run
+// at once. The real gate on a key is the gateway's own (每个 key/账号的并发),
+// this only stops one click from opening a hundred sockets.
+const modelTestAtOnce = 8;
 function testButton(p, label, tip, run) {
   const b = el("button", "text action", label), on = () => testsOn[p.id];
   Object.assign(b.dataset, { tests: p.id, label, tip });
@@ -11044,6 +11068,18 @@ async function loadSmartLive() {
       m[e.provider + "/" + e.model] = { cls, state: e.state };
     }
     smartLive = m;
+    // 智能路由记下的状态与速度，供应商页的球与 tok/s 也用这一份：
+    // App 重启后网关起得比页面慢，第一次拉不到就再没机会了（0.1.68 的门槛问题）
+    const st = {}, sp = {}, tr = {};
+    for (const e of j.measured || j.entries || []) {
+      const k = e.provider + "/" + e.model;
+      if (e.state) st[k] = { state: e.state, ok: seenAt(e.lastOk), tested: seenAt(e.lastOk) || seenAt(e.lastTry) };
+      if (e.tps) sp[k] = e.tps;
+      if (e.trying) tr[k] = true;
+    }
+    srState = st;
+    srSpeed = sp;
+    srTrying = tr;
     applySmartLive();
   } catch (e) { /* 页面不在这台 magpie 上就算了 */ }
 }
@@ -11051,8 +11087,9 @@ loadSmartLive();
 setInterval(loadSmartLive, 15000);
 
 function renderModels(p) {
-  // 量过的速度与状态在启动时就预读了（prefetchProviders）；万一还没到，这里补一次
-  if (!srSpeedAsked) { srSpeedAsked = true; refreshSrSpeed().then(() => draw()).catch(() => {}); }
+  // 每次打开编辑器都拉一次：万一启动时网关还没起来，这一次会把结果补上
+  srSpeedAsked = true;
+  refreshSrSpeed().then(() => { if (editing) draw(); }).catch(() => {});
   // a chip's dot: how its model answered, when it has been asked
   const tested = (c, id) => {
     const got = modelTests[p.id], asked = !!got && id in got, ref = p.id + "/" + id;
@@ -11067,20 +11104,27 @@ function renderModels(p) {
       if (x?.ok && x.tps) testTps = x.tps;
     } else {
       // 还没在这张页面上测过：智能路由已经知道的就先显示（不参与的不算可用/不可用）
-      const st = srState[ref];
-      if (st && st !== "excluded") {
-        c.append(el("span", "tdot " + (st === "candidate" ? "ok" : st === "diagnosing" ? "wait" : "bad")));
+      const got = srState[ref], st = got?.state;
+      if (got && (st !== "excluded" || got.tested)) {
+        const cls = st === "candidate" ? "ok"
+          // 诊断中不等于正在测：只有真被量过（有 lastTry/lastOk）才让它闪，
+          // 从没测过的就是个静态灰点 —— 否则满屏都在「检测中」，而检测器根本没跑
+          : st === "diagnosing" ? (srTrying[ref] ? "wait" : "")
+          : st === "excluded" ? (got.ok ? "ok" : "bad")
+          : "bad";
+        c.append(el("span", "tdot " + cls));
         c.title = st === "candidate" ? t("Smart routing: available")
           : st === "diagnosing" ? t("Smart routing: not tested yet")
           : st === "cooling" ? t("Smart routing: cooling down after a failure")
           : st === "busy" ? t("Smart routing: too many requests at once")
+          : st === "excluded" ? (got.ok ? t("Smart routing: tested, not joined") : t("Smart routing: failed last time, not joined"))
           : t("Smart routing: switched off after repeated failures");
       }
     }
     // 输出速度：先看这次测试自己的结果（刚测完就用它，不必等 /api/smartroute），
     // 没有再用智能路由记下的
     const tps = testTps || srSpeed[ref];
-    if (tps) {
+    if (tps > 0) {
       const sp = el("span", "badge speed", tps.toFixed(1) + " tok/s");
       sp.title = t("Output speed, as the smart routing page measured it");
       c.append(sp);
@@ -11196,10 +11240,13 @@ function renderModels(p) {
     }
   };
   const box = el("div", "models");
+  // 只画这次没测挂的（「只选可用」按下时），失败的那些连同它们的红叉一起藏起来
+  let workOnly = false;
   const chips = el("div", "mchips");
   const names = el("div", "mnames");
   names.dataset.provider = p.id;
-  const q = p.models.length > 24 ? input("", t("filter {n} models…", { n: p.models.length })) : null;
+  // 一屏放不下的量就该能搜：原来要超过 24 个才给搜索框，24 个及以下就只能翻
+  const q = p.models.length > 8 ? input("", t("filter {n} models…", { n: p.models.length })) : null;
   let showAll = false;
   // the chips are held to a few lines, scrolled within, and let out to
   // their full height and folded back (#833), while taller than those lines;
@@ -11238,8 +11285,11 @@ function renderModels(p) {
     // models that would read alike say what tells them apart (modelTells)
     const tells = modelTells(p.models);
     // a filter is a search: what it doesn't match is left out
+    const tests = modelTests[p.id] || {};
     for (const m of p.models) {
       const on = draft.chosen.includes(m.id);
+      // 「只选可用」按下后：这次测挂的那些不再画
+      if (workOnly && tests[m.id] && !tests[m.id].ok) continue;
       if (f && !m.id.toLowerCase().includes(f) && !(m.name || "").toLowerCase().includes(f) && !(m.default || "").toLowerCase().includes(f)) continue;
       // past the first 80 only the picked are drawn, till the rest are asked for (#685)
       if (picksOnly && !on) { unpicked++; continue; }
@@ -11261,6 +11311,7 @@ function renderModels(p) {
       if (load) c.append(load);
       const ctx = contextTag(m.context, m.name);
       if (ctx) c.append(ctx);
+      else if (!(m.context > 0)) c.append(ctxUnknown());
       // the number Claude Desktop's menu says beside this model (#2578)
       if (m.desktop) {
         const d = el("span", "badge ctx", m.desktop);
@@ -11788,17 +11839,26 @@ function renderModels(p) {
     const ids = servedIds(p);
     return [ids, ids.filter((id) => got[id] && !got[id].ok)];
   };
+  // 点一下：把上次测失败的取消勾选，并把它们从列表里隐掉（否则看起来
+  // 什么也没发生 —— 列表仍画着那 48 个）；再点一下恢复显示
   workOn.onclick = () => {
     const [ids, bad] = failedPicks();
     if (!bad.length) return;
-    draft.chosen = ids.filter((id) => !bad.includes(id));
-    draft.none = true;
+    workOnly = !workOnly;
+    workOn.classList.toggle("on", workOnly);
+    // 按钮要自己说明现在是哪一档，否则看不出点没点上
+    workOn.textContent = workOnly ? t("Show all") : t("Working only");
+    if (workOnly) {
+      draft.chosen = ids.filter((id) => !bad.includes(id));
+      draft.none = true;
+    }
     draw();
     status(t(bad.length === 1 ? "Unpicked 1 model that didn't answer" : "Unpicked {n} models that didn't answer", { n: bad.length }), "ok");
   };
   const drawWorkOn = () => {
     // in the row only once a test has answered, not there hidden till then
     if (!Object.values(modelTests[p.id] || {}).some((x) => x)) { workOn.remove(); return; }
+    workOn.textContent = workOnly ? t("Show all") : t("Working only");
     if (!workOn.isConnected) bulk.append(workOn);
     const bad = failedPicks()[1].length;
     workOn.disabled = !bad;
@@ -11852,12 +11912,29 @@ function renderModels(p) {
     const got = modelTests[p.id] = {};
     for (const id of ids) got[id] = null;
     draw();
+    // 一个模型一个请求：谁回来谁上球，不必等 75 个全测完才一起更新。
+    // 服务端那条「一次测一批」的路径仍然在（命令行/脚本用），这里只是
+    // 换成逐个发，顺带就是这个页面要的并发与进度。
+    let next = 0, bad = 0, first = null;
+    const pump = async () => {
+      while (next < ids.length) {
+        const id = ids[next++];
+        try {
+          const r = await provTest(p.id, { ...asTyped(), test: [id] });
+          const x = got[id] = r.results[0] || { ok: false, error: "no result" };
+          if (!x.ok) { bad++; first = first || [id, x]; }
+        } catch (e) {
+          got[id] = { ok: false, error: e?.stopped ? t("Test stopped") : String(e?.message || e) };
+          bad++;
+        }
+        draw();
+      }
+    };
     try {
-      const r = await provTest(p.id, { ...asTyped(), test: ids });
-      r.results.forEach((x, i) => { got[ids[i]] = x; });
+      await Promise.all(Array.from({ length: Math.min(modelTestAtOnce, ids.length) }, pump));
       await refreshSrSpeed();
-      const i = r.results.findIndex((x) => !x.ok), x = r.results[i], bad = r.results.filter((x) => !x.ok).length;
-      status(x ? t("{n} of {all} models didn't answer; {model}: {error}", { n: bad, all: ids.length, model: ids[i], error: (x.status ? x.status + " · " : "") + x.error }) : t("All {n} models answered", { n: ids.length }), x ? "err" : "ok");
+      const x = first && first[1];
+      status(x ? t("{n} of {all} models didn't answer; {model}: {error}", { n: bad, all: ids.length, model: first[0], error: (x.status ? x.status + " · " : "") + x.error }) : t("All {n} models answered", { n: ids.length }), x ? "err" : "ok");
     } catch (e) { delete modelTests[p.id]; testErr(e); }
     draw();
   });
@@ -22559,7 +22636,23 @@ function renderPluginCheckins(s) {
   tab.dataset.en = ps.length === 1 ? ps[0].name || ps[0].id : "Plugins";
   tab.textContent = t(tab.dataset.en);
   setWarmTab(warmTab);
-  $("#pluginCheckinList").replaceChildren(...ps.map((p) => {
+  // one switch for all of them (the Plugins tab's row above the list)
+  const all = el("div", "row pref");
+  const allWho = el("div", "who");
+  allWho.append(el("div", "name", t("All daily check-ins")),
+    el("div", "sub", t("Turn every plugin's daily check-in on or off at once")));
+  const allBox = el("div");
+  allBox.append(segs([["off", t("Off")], ["on", t("On")]], ps.some((p) => p.on) ? "on" : "off", async (v) => {
+    try {
+      prefs = await writingPrefs(api("settings/plugin-checkins", { on: v === "on" }));
+      state.settings = prefs;
+      renderPluginCheckins(prefs);
+    } catch (err) {
+      statusErr(err);
+    }
+  }));
+  all.append(allWho, allBox);
+  $("#pluginCheckinList").replaceChildren(all, ...ps.map((p) => {
     const row = el("div", "row pref");
     row.dataset.provider = p.id;
     const who = el("div", "who");

@@ -2683,6 +2683,11 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 /* the one API a model is asked on, picked by the user: the accent, as a choice made */
 .badge.mapi-tag { background: var(--accent-soft); color: var(--accent); letter-spacing: .02em; text-transform: none; }
 .mchip .badge { margin: 0 -3px 0 1px; padding: 0 4px; font-size: 9px; line-height: 14px; }
+/* 名字与徽章都不换行：模型名长了就整条 chip 占满一行，别把名字折成两行 */
+.mchip { white-space: nowrap; }
+.mchip > * { flex: none; }
+/* 速度是量出来的数，不是分类标签：不转大写、不加字距，窄一点 */
+.mchip .badge.speed { text-transform: none; letter-spacing: 0; font-variant-numeric: tabular-nums; }
 .row.model .name .badge { margin-left: 6px; padding: 0 4px; font: var(--ui-style, normal) 600 9px/14px var(--ui-font, var(--font)); font-stretch: var(--ui-stretch, 100%); }
 /* the chips a model is summed up in, where a list of models is read: the
    Gateway page's list, and a routing group's members in its editor */

@@ -44,8 +44,10 @@ var restFor = map[Kind]time.Duration{
 	KindBadRequest:  5 * time.Minute,
 	KindContent:     time.Minute,
 	KindUpstream:    30 * time.Second,
-	KindTimeout:     30 * time.Second,
-	KindUnknown:     30 * time.Second,
+	// 超时给两分钟：探针自己最长等 45 秒，30 秒冷却等于刚超时就又戳一次，
+	// 慢模型会一直在「诊断中」来回测
+	KindTimeout: 2 * time.Minute,
+	KindUnknown: 30 * time.Second,
 	KindInterrupted: 0,
 }
 

@@ -2,13 +2,12 @@ package gui
 
 import (
 	"bufio"
-	"strconv"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -44,12 +43,20 @@ func diagnoseBatch() {
 		if e.State != smartroute.Diagnosing {
 			continue
 		}
+		// 在飞的探针总数封顶：轮次不再等整批回来，慢的那一个不该拖住队列
+		if inFlight.Load() >= int32(smartroute.DiagnoseInFlight) {
+			break
+		}
 		// 供应商页没勾的不测：它不会进路由组，测了只是白花额度
 		if !provider.Checked(e.Provider + "/" + e.Model) {
 			continue
 		}
 		// tried within the last two rounds: let it be
 		if !e.LastTry.IsZero() && now.Sub(e.LastTry) < 2*smartroute.DiagnoseGap {
+			continue
+		}
+		// 45 秒的探针还没回来时别再起一个：不然同一个慢模型会同时挂好几个请求
+		if !smartroute.Open().MarkTrying(e.Provider, e.Model) {
 			continue
 		}
 		batch = append(batch, e)
@@ -61,30 +68,28 @@ func diagnoseBatch() {
 		return
 	}
 
-	var wg sync.WaitGroup
-	var bad, total int32
+	// 不等整批：每批只负责起头，探针跑完自己释放槽位。以前 wg.Wait 让一个
+	// 45 秒的慢模型把整轮拖住，75 个模型的供应商要测十分钟。
 	for _, e := range batch {
-		wg.Add(1)
+		inFlight.Add(1)
 		go func(e smartroute.SnapshotEntry) {
-			defer wg.Done()
-			diagnoseOne(e.Provider, e.Model)
-			atomic.AddInt32(&bad, 0)
-			atomic.AddInt32(&total, 1)
+			defer inFlight.Add(-1)
+			defer smartroute.Open().DoneTrying(e.Provider, e.Model)
+			diagnoseOne(context.Background(), e.Provider, e.Model)
 		}(e)
 	}
-	wg.Wait()
-
-	// 整批都失败不再停整轮：每个模型自己进 30 秒冷却，节奏已经由它控制，
-	// 停了这一轮反而让「诊断中」看起来卡死
-	_ = bad
-	_ = total
 }
+
+// inFlight counts the probes out now, across rounds.
+var inFlight atomic.Int32
 
 // diagnoseOne 模拟一次 agent 请求：打 magpie 自己的 /v1/chat/completions，
 // model 就是列表里那个全名（workbuddy-ai/xxx），前缀由 magpie 分派给供应商。
 // 不自己拼 "provider/model"（会变成双前缀），也不调供应商的测试接口。
-func diagnoseOne(providerID, modelID string) (bool, int, int64, float64, string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+// base 是这次探针挂在谁的取消上：诊断器给 Background（自己 45 秒超时），
+// 供应商页给请求的 ctx —— 这样「停止」按钮真的能停，不必等 45 秒。
+func diagnoseOne(base context.Context, providerID, modelID string) (bool, int, int64, float64, string) {
+	ctx, cancel := context.WithTimeout(base, 45*time.Second)
 	defer cancel()
 	// max_tokens 给到 64：太少算不出速度（只有 1 个块就没有"每秒多少块"）。
 	// 诊断要的是「这个模型现在能不能用、多快」，多花几十个 token 是值得的。

@@ -4225,6 +4225,8 @@ function routingPage(part) {
     actsFold = { rs: [...rs], by };
     return by;
   }
+  // 休息中的账号沉到同一个供应商的后面：能答的先上，用户要的是「失败账号与成功账号交换位置」
+  const restingAt = (a) => !!(a.rest && at(a.rest.until) > Date.now());
   function renderActs(rs) {
     // a rest lifted by hand since the request that found it (#1869): the
     // kept requests still say it, until the next one asks it again. By the
@@ -4234,7 +4236,7 @@ function routingPage(part) {
       const mrests = [...a.mrests.values()].some((x) => lifted(x.rest.key, x.at))
         ? new Map([...a.mrests].filter(([, x]) => !lifted(x.rest.key, x.at))) : a.mrests;
       return rest === a.rest && mrests === a.mrests ? a : { ...a, rest, mrests };
-    }).sort((x, y) => (x.w.name || "").localeCompare(y.w.name || "") || x.w.provider.localeCompare(y.w.provider) || rankOf(x.w) - rankOf(y.w) || x.pos - y.pos);
+    }).sort((x, y) => (x.w.name || "").localeCompare(y.w.name || "") || x.w.provider.localeCompare(y.w.provider) || rankOf(x.w) - rankOf(y.w) || (restingAt(x) ? 1 : 0) - (restingAt(y) ? 1 : 0) || x.pos - y.pos);
     setText(actLabel, t("Accounts and keys"));
     setText(actNote, t(!day && tallies && Object.keys(tallies).length ? "over today's requests" : "over those requests"));
     // live, with a subscription account listed: a kept day's were weighed
@@ -8189,7 +8191,11 @@ function smartRoutePage() {
 .sr-cell{min-width:0}
 .sr-cell b{display:block;font-size:10px;font-weight:400;opacity:.55;margin-bottom:1px}
 .sr-cell i{display:block;font-style:normal;font-size:12.5px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sr-alert{margin-top:8px;padding:5px 9px;border-radius:7px;font-size:12px;line-height:1.45;background:rgba(224,179,65,.12);border:1px solid rgba(224,179,65,.32);color:#e0b341;word-break:break-all}
+.sr-alert{margin-top:8px;padding:5px 9px;border-radius:7px;font-size:12px;line-height:1.45;background:rgba(127,127,127,.10);border:1px solid rgba(127,127,127,.26);color:var(--muted);word-break:break-all}
+.sr-alert.red{background:rgba(214,69,69,.12);border-color:rgba(214,69,69,.34);color:#e06c6c}
+.sr-alert.orange{background:rgba(230,140,60,.12);border-color:rgba(230,140,60,.34);color:#e68c3c}
+.sr-alert.yellow{background:rgba(224,179,65,.12);border-color:rgba(224,179,65,.32);color:#e0b341}
+.sr-cell i.free{color:#4fbf7f}
 .sr-err{display:none;margin-top:6px;padding:5px 9px;border-radius:7px;font-size:11.5px;line-height:1.45;background:rgba(224,108,108,.10);border:1px solid rgba(224,108,108,.30);color:#e08d8d;word-break:break-all}
 .sr-item.open .sr-err{display:block}
 .sr-acts{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
@@ -8239,16 +8245,15 @@ function smartRoutePage() {
   function item(e) {
     const ok = e.state === "candidate";
     // 还没测过：诊断队列里排着，但一次也没发过请求（不是"冷却""禁用"那种结论）
-    const untried = !e.lastTry && !e.lastOk && !e.failures;
     // 绿=在路由里用着，蓝=正在测（还没结论），灰=没参与/还没测，红=冷却/禁用/并发满
     const dot = ok ? "sr-ok"
-      : e.state === "diagnosing" ? (untried ? "sr-none" : "sr-run")
+      : e.state === "diagnosing" ? (e.trying ? "sr-run" : "sr-none")
       : e.state === "excluded" ? "sr-none" : "sr-bad";
     // 状态徽章跟真实情况走：正在被调用 vs 空闲可用 vs 从没试过
     const kindName = e.kind ? KIND_NAMES[e.kind] : "";
     const label = e.answering && ok ? "回答中"
       : ok ? "可用"
-      : e.state === "diagnosing" ? (untried ? "未检测" : "检测中")
+      : e.state === "diagnosing" ? (e.trying ? "检测中" : "未检测")
       : e.state === "cooling" ? (kindName || "冷却中")
       : e.state === "excluded" ? "未参与"
       : e.state === "busy" ? "并发满"
@@ -8272,7 +8277,8 @@ function smartRoutePage() {
     const spec = `<div class="sr-metrics">`
       + cell("类型", types)
       + cell("上下文", ctx)
-      + cell("倍率", e.rate ? e.rate + "×" : "—")
+      + (e.free ? '<div class="sr-cell"><b>倍率</b><i class="free">免费</i></div>'
+        : cell("倍率", e.rate ? e.rate + "×" : "—"))
       + `</div>`;
 
     // 告警条：失败次数、重试倒计时、恢复时间、额度重置，挤成一行
@@ -8289,13 +8295,17 @@ function smartRoutePage() {
       const left = Math.max(0, Math.round((new Date(e.disabledUntil) - Date.now()) / 3600000));
       notes.push(left ? left + " 小时后恢复" : "即将恢复");
     }
+    let days = null;
     if (e.soon) {
-      const days = Math.round((e.soon * 1000 - Date.now()) / 86400000);
-      if (days >= 0) notes.push(days ? days + " 天后重置" : "今天重置");
+      const d = Math.round((e.soon * 1000 - Date.now()) / 86400000);
+      if (d >= 0) { days = d; notes.push(d ? d + " 天后重置" : "今天重置"); }
     }
-    if (e.free) notes.push("免费");
+    // 颜色说严重程度：失败红、3 天内橙、7 天内黄，其余（含免费）灰
+    const bad = e.failures > 0 || e.state === "cooling" || e.state === "disabled"
+      || (e.kind && e.state !== "excluded" && e.state !== "candidate");
+    const alertTone = bad ? "red" : days !== null && days <= 3 ? "orange" : days !== null && days <= 7 ? "yellow" : "grey";
     const alert = notes.length
-      ? `<div class="sr-alert">⚠ ${notes.join(" · ")}</div>` : "";
+      ? `<div class="sr-alert ${alertTone}">⚠ ${notes.join(" · ")}</div>` : "";
 
     const head = `<div class="sr-head"><span class="sr-dot ${dot}"></span>`
       + `<span class="name">${esc(e.provider + "/" + e.model)}</span>`
@@ -8317,7 +8327,7 @@ function smartRoutePage() {
     return `<div class="sr-item">${head}${perf}${spec}${alert}${err}<div class="sr-acts">${acts.join("")}</div></div>`;
   }
 
-  // 打分：倍率 30 + 首字 25 + 速度 30 + 上下文 15 + 整体延迟 10 = 110
+  // 打分：倍率 30 + 首字 15 + 速度 30 + 上下文 15 + 整体延迟 10 + 快到重置 15 = 115
   function scoreOf(e) {
     let s = 0;
     const rate = typeof e.rate === "number" ? e.rate : null;
@@ -8328,9 +8338,10 @@ function smartRoutePage() {
       else if (rate <= 3) s += 10;
       else if (rate <= 5) s += 5;
     }
-    const t = e.ttft || 0;
-    if (t > 0) s += t <= 1000 ? 25 : t <= 1500 ? 20 : t <= 2000 ? 15 : t <= 2500 ? 10 : t <= 3000 ? 5 : 0;
-    const v = e.tps || 0;
+    // 排序用最近十次去掉极值的平均（网关侧 Entry.average），卡片仍显示最近一次
+    const t = e.avgTtft || e.ttft || 0;
+    if (t > 0) s += t <= 1000 ? 15 : t <= 1500 ? 12 : t <= 2000 ? 9 : t <= 2500 ? 6 : t <= 3000 ? 3 : 0;
+    const v = e.avgTps || e.tps || 0;
     if (v > 100) s += 30;
     else if (v >= 50) s += 25;
     else if (v >= 40) s += 20;
@@ -8341,8 +8352,13 @@ function smartRoutePage() {
     if (c >= 900000) s += 15;
     else if (c >= 500000) s += 10;
     else if (c >= 100000) s += 5;
-    const l = e.latency || 0;
+    const l = e.avgLatency || e.latency || 0;
     if (l > 0) s += l <= 1500 ? 10 : l <= 2000 ? 8 : l <= 2500 ? 6 : l <= 3000 ? 4 : l <= 4000 ? 2 : 0;
+    // 额度快重置的加分：不用掉就浪费了（与 Go 侧 ScoreAt 同一套档位）
+    if (typeof e.soon === "number" && e.soon > 0) {
+      const days = (e.soon * 1000 - Date.now()) / 86400000;
+      s += days <= 3 ? 15 : days <= 7 ? 12 : days <= 14 ? 8 : days <= 30 ? 4 : 0;
+    }
     return s;
   }
 

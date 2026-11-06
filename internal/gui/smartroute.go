@@ -18,6 +18,16 @@ import (
 // smartrouteSnapshot is the store, with every model the providers page
 // lists ensured an entry (so the page lists them all, untried).
 func smartrouteSnapshot(now time.Time) []smartroute.SnapshotEntry {
+	entries, _ := smartrouteEntries(now)
+	return entries
+}
+
+// smartrouteEntries is the snapshot twice: the models the providers page
+// ticked (the smart page's list), and every model ever measured — ticked or
+// not, answered or failed — so the provider editor's chips can show what a
+// past test found after a restart. Dropping the untested ones there is what
+// made a test's red crosses vanish on relaunch.
+func smartrouteEntries(now time.Time) (picked, measured []smartroute.SnapshotEntry) {
 	store := smartroute.Open()
 	refs := make([]smartroute.Ref, 0, 64)
 	// 只列供应商那页勾上的模型：catalog 里还有没被选中的，
@@ -35,20 +45,28 @@ func smartrouteSnapshot(now time.Time) []smartroute.SnapshotEntry {
 			Inputs: e.Inputs, Outputs: e.Outputs})
 	}
 	store.Ensure(refs)
-	// 早先版本拿 catalog 的 "provider/model" 当裸模型名存过一批，
-	// 拼出来是 "provider/provider/model"：模型名里不会有 "/"，丢掉它们
+	// 早先版本拿 catalog 的 "provider/model" 当裸模型名存过一批，拼出来是
+	// "provider/provider/model"：只丢这种**双前缀**的。
+	// 不能拿「名字里有 /」当判据 —— Cline 的 id 是 reflection/beam-free，
+	// 一刀切会把真条目当垃圾滤掉；也不能只比「以 provider/ 开头」——
+	// NVIDIA 的 id 本身就是 nvidia/nemotron-…，供应商 ID 也叫 nvidia，
+	// 那样会把它们的检测记录全丢掉（重启后这两个模型就没有状态了）。
 	out := store.Snapshot(now)
-	keep := out[:0]
+	measured = make([]smartroute.SnapshotEntry, 0, len(out))
 	for _, e := range out {
-		if strings.Contains(e.Model, "/") {
+		if strings.HasPrefix(e.Model, e.Provider+"/"+e.Provider+"/") {
 			continue // the old double-prefixed leftovers
 		}
+		if e.LastTry.IsZero() && e.LastOK.IsZero() {
+			continue // never measured: nothing to show
+		}
+		measured = append(measured, e)
 		if onOk && !on[e.Provider+"/"+e.Model] {
 			continue // not ticked on the providers page: it waits, unlisted
 		}
-		keep = append(keep, e)
+		picked = append(picked, e)
 	}
-	return keep
+	return picked, measured
 }
 
 // smartGroupID is the routing group the smart router serves as one model:
@@ -162,9 +180,11 @@ func smartrouteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/smartroute", func(rw http.ResponseWriter, r *http.Request) {
 		now := time.Now()
 		ensureSmartGroup(now)
+		_, measured := smartrouteEntries(now)
 		writeJSON(rw, map[string]any{
-			"now":     now.UnixMilli(),
-			"entries": smartrouteSnapshot(now),
+			"now":      now.UnixMilli(),
+			"entries":  smartrouteSnapshot(now),
+			"measured": measured,
 		})
 	})
 
@@ -194,9 +214,11 @@ func smartrouteRoutes(mux *http.ServeMux) {
 		}
 		smartroute.Open().SetExcluded(in.Provider, in.Model, in.Excluded)
 		now := time.Now()
+		_, measured := smartrouteEntries(now)
 		writeJSON(rw, map[string]any{
-			"now":     now.UnixMilli(),
-			"entries": smartrouteSnapshot(now),
+			"now":      now.UnixMilli(),
+			"entries":  smartrouteSnapshot(now),
+			"measured": measured,
 		})
 	})
 }

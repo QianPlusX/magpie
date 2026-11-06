@@ -42,6 +42,11 @@ func PickedByUser() map[string]bool {
 	// 供应商，它们的 Models 是插件自带的全量清单（用户没添加过也一样），
 	// 拿它当勾选就会把另一个供应商的同名模型也算进来。
 	for _, p := range load().Providers {
+		// 供应商关掉了（Providers 页那个开关）就不算勾选：它的模型在网关里
+		// 也解析不到（providerEntries 按 Off 过滤过），留在智能路由里只是幽灵
+		if p.Off {
+			continue
+		}
 		for _, id := range p.Models {
 			out[p.ID+"/"+id] = true
 		}

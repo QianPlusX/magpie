@@ -45,12 +45,62 @@ const (
 	// CoolFor: how long a model rests after one failure
 	CoolFor = 30 * time.Second
 	// DiagnoseBatch and DiagnoseGap: how many models a diagnosing round
-	// checks at once, and how long it waits between rounds
-	DiagnoseBatch = 5
+	// starts, and how long it waits between rounds.
+	DiagnoseBatch = 12
 	DiagnoseGap   = 5 * time.Second
+	// DiagnoseInFlight: how many probes may be out at once across all rounds.
+	// Rounds no longer wait for the batch before starting the next one, so a
+	// slow model doesn't hold the queue back — this is the only ceiling.
+	DiagnoseInFlight = 24
+	// MinContext: 窗口比这更小的模型，检测成功后自动移出参与。小窗口撑不住
+	// 正常对话，留在候选里只会让请求频繁改道；页面上仍可手动「重新参与」。
+	MinContext = 800_000
 )
 
 // Entry is one model's standing.
+// Sample is one measurement: what the model took to start answering, how
+// fast it wrote, and how long the whole thing took.
+type Sample struct {
+	TTFT    float64 `json:"ttft,omitempty"`
+	TPS     float64 `json:"tps,omitempty"`
+	Latency float64 `json:"latency,omitempty"`
+}
+
+// recentSamples is how many measurements the average keeps.
+const recentSamples = 10
+
+// firstOf is the first of the two that was measured.
+func firstOf(a, b float64) float64 {
+	if a > 0 {
+		return a
+	}
+	return b
+}
+
+// average answers one field's mean: all of them under ten measurements,
+// the middle ones above (the largest and the smallest dropped), so one slow
+// or fast answer does not move the ranking.
+func (e *Entry) average(pick func(Sample) float64) float64 {
+	vals := make([]float64, 0, len(e.Recent))
+	for _, sm := range e.Recent {
+		if v := pick(sm); v > 0 {
+			vals = append(vals, v)
+		}
+	}
+	if len(vals) == 0 {
+		return 0
+	}
+	if len(vals) >= recentSamples {
+		sort.Float64s(vals)
+		vals = vals[1 : len(vals)-1]
+	}
+	sum := 0.0
+	for _, v := range vals {
+		sum += v
+	}
+	return sum / float64(len(vals))
+}
+
 type Entry struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
@@ -71,11 +121,14 @@ type Entry struct {
 	TTFT    float64 `json:"ttft,omitempty"`
 	TPS     float64 `json:"tps,omitempty"`
 	Latency float64 `json:"latency,omitempty"`
+	// Recent: 最近十次答上的首字/速度/延迟。排序用它们的平均值（满十条
+	// 去掉最大最小再平均），免得一次抖动把排名带偏
+	Recent []Sample `json:"recent,omitempty"`
 	// Context: the window it takes, from the provider list
 	Context int `json:"context,omitempty"`
 	// Free: its provider's list says it costs nothing; what it takes and
 	// makes (text, image, audio…) the type filter and the list show
-	Free    bool     `json:"free,omitempty"`
+	Free bool `json:"free,omitempty"`
 	// Soon: the soonest renewal of this provider's account window, unix
 	// seconds — quota about to renew is spent first (routes.Smart's Soon)
 	Soon    int64    `json:"soon,omitempty"`
@@ -116,10 +169,11 @@ func (e *Entry) StateNow(now time.Time) State {
 		return Busy
 	case e.Failures > 0 || e.LastOK.IsZero():
 		return Diagnosing
-	case e.TTFT <= 0 || e.Latency <= 0 || e.Context <= 0:
-		// 首字、延迟、上下文缺一项就不算可用。速度不在这里：有的上游一次
-		// 回完、不给分块，速度测不出来，但模型明明是通的——算进这儿会让它
-		// 永远停在「检测中」，被诊断器每 5 秒重测一次（kiro/glm-5 卡住就是这个）
+	case e.TTFT <= 0 || e.Latency <= 0:
+		// 只认「答过、量出首字与延迟」。速度与上下文不在这里：有的上游一次
+		// 回完、不给分块，速度测不出来；插件供应商的目录也可能没给窗口大小，
+		// 两者缺一项就让模型永远停在「检测中」，被诊断器每 5 秒重测一次
+		// （kiro/glm-5、Cline 的免费模型都是这么卡住的）
 		return Diagnosing
 	}
 	return Candidate
@@ -130,6 +184,10 @@ type Store struct {
 	mu      sync.Mutex
 	path    string
 	entries map[string]*Entry
+	// trying 记着「这会儿正有探针在测」的模型。一次诊断最长 45 秒，而诊断
+	// 轮次每 5 秒就起一批：不挡住的话同一个慢模型会被连着戳好几次（用户：
+	// 「使用 key 的供应商出现了反复测试」）。只活在内存里，重启即清空。
+	trying map[string]time.Time
 }
 
 var (
@@ -161,7 +219,13 @@ func (s *Store) load() {
 	}
 	var entries []*Entry
 	if json.Unmarshal(data, &entries) != nil {
-		return
+		// 主文件被截断（App 被杀在写入中间）：退回上一次写完的 .tmp
+		if data, err = os.ReadFile(s.path + ".tmp"); err != nil {
+			return
+		}
+		if json.Unmarshal(data, &entries) != nil {
+			return
+		}
 	}
 	for _, e := range entries {
 		if e != nil && e.Provider != "" && e.Model != "" {
@@ -180,9 +244,12 @@ func (s *Store) save() {
 		return
 	}
 	_ = os.MkdirAll(filepath.Dir(s.path), 0o755)
-	// ponytail: write straight to the file; a torn write loses the page's
-	// memory, not anything the gateway needs. Rename if that matters.
-	_ = os.WriteFile(s.path, data, 0o644)
+	// 先写临时文件再改名：App 被系统杀掉时常正好落在写入中间，直接覆盖会
+	// 留下半截 JSON，下次启动解析失败，所有检测记录一起消失
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err == nil {
+		_ = os.Rename(tmp, s.path)
+	}
 }
 
 // Get returns the entry for provider/model, made when it wasn't there.
@@ -235,6 +302,16 @@ func (s *Store) Succeeded(provider, model, rest string, ttft, tps, latency float
 		}
 		if latency > 0 {
 			e.Latency = latency
+		}
+		if ttft > 0 || tps > 0 || latency > 0 {
+			e.Recent = append(e.Recent, Sample{TTFT: ttft, TPS: tps, Latency: latency})
+			if len(e.Recent) > recentSamples {
+				e.Recent = e.Recent[len(e.Recent)-recentSamples:]
+			}
+		}
+		// 窗口太小的模型检测完就挪进「未参与」：它答得上，但装不下正常对话
+		if e.Context > 0 && e.Context < MinContext {
+			e.Excluded = true
 		}
 	})
 }
@@ -354,6 +431,35 @@ func (s *Store) SetContext(provider, model string, window int) {
 	s.Update(provider, model, func(e *Entry) { e.Context = window })
 }
 
+// tryingFor: how long a probe's claim holds when nothing releases it. A probe
+// gives up after 45 seconds, so anything older than this is a leftover.
+const tryingFor = 2 * time.Minute
+
+// MarkTrying claims the one probe slot a model has. It answers false while a
+// probe is still in flight: the diagnoser starts a round every DiagnoseGap
+// seconds, and a 45-second probe would otherwise be restarted eight times over
+// ("使用 key 的供应商出现了反复测试").
+func (s *Store) MarkTrying(provider, model string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.trying == nil {
+		s.trying = map[string]time.Time{}
+	}
+	key := provider + "/" + model
+	if at, ok := s.trying[key]; ok && time.Since(at) < tryingFor {
+		return false
+	}
+	s.trying[key] = time.Now()
+	return true
+}
+
+// DoneTrying releases the slot, so the next round may measure it again.
+func (s *Store) DoneTrying(provider, model string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.trying, provider+"/"+model)
+}
+
 // Ref is a model the provider list knows, with the window it takes.
 type Ref struct {
 	Provider, Model string
@@ -426,6 +532,13 @@ func equalStrings(a, b []string) bool {
 type SnapshotEntry struct {
 	*Entry
 	State State `json:"state"`
+	// Trying: 这会儿真有一个探针在跑。页面靠它决定画不画那颗「正在测」的
+	// 闪烁球——「检测中」这个状态只说明上次失败或还没测过，不代表正在测。
+	Trying bool `json:"trying,omitempty"`
+	// 排序用的平均值（见 Entry.average），卡片上仍显示最近一次的数
+	AvgTTFT    float64 `json:"avgTtft,omitempty"`
+	AvgTPS     float64 `json:"avgTps,omitempty"`
+	AvgLatency float64 `json:"avgLatency,omitempty"`
 }
 
 func (s *Store) Snapshot(now time.Time) []SnapshotEntry {
@@ -433,7 +546,12 @@ func (s *Store) Snapshot(now time.Time) []SnapshotEntry {
 	defer s.mu.Unlock()
 	out := make([]SnapshotEntry, 0, len(s.entries))
 	for _, e := range s.entries {
-		out = append(out, SnapshotEntry{Entry: e, State: e.StateNow(now)})
+		at, held := s.trying[e.Provider+"/"+e.Model]
+		out = append(out, SnapshotEntry{Entry: e, State: e.StateNow(now),
+			Trying:     held && time.Since(at) < tryingFor,
+			AvgTTFT:    e.average(func(s Sample) float64 { return s.TTFT }),
+			AvgTPS:     e.average(func(s Sample) float64 { return s.TPS }),
+			AvgLatency: e.average(func(s Sample) float64 { return s.Latency })})
 	}
 	sortEntries(out)
 	return out
@@ -458,9 +576,17 @@ func sortEntries(es []SnapshotEntry) {
 	})
 }
 
-// Score 是模型打分：倍率 30 + 首字 25 + 速度 30 + 上下文 15 + 整体延迟 10，
-// 满分 110。页面上的列表顺序与 group/smart 的成员顺序都按它排。
+// Score 是模型打分：倍率 30 + 首字 15 + 速度 30 + 上下文 15 + 整体延迟 10
+// + 额度即将重置 15，满分 115。页面上的列表顺序与 group/smart 的成员顺序都按它排。
+//
+// 「快到到期」这一项是给额度快作废的账号加分：窗口还剩几天就重置，
+// 现在不用掉就浪费了。没有额度窗口的（Soon 为零）不加不减。
 func Score(e SnapshotEntry) int {
+	return ScoreAt(e, time.Now())
+}
+
+// ScoreAt 同 Score，只是把「现在」显式传进来，方便测试与复现。
+func ScoreAt(e SnapshotEntry, now time.Time) int {
 	s := 0
 	switch {
 	case e.Free && e.Rate <= 0:
@@ -476,32 +602,33 @@ func Score(e SnapshotEntry) int {
 	case e.Rate <= 5:
 		s += 5
 	}
-	if t := e.TTFT; t > 0 {
+	if t := firstOf(e.AvgTTFT, e.TTFT); t > 0 {
 		switch {
 		case t <= 1000:
-			s += 25
-		case t <= 1500:
-			s += 20
-		case t <= 2000:
 			s += 15
+		case t <= 1500:
+			s += 12
+		case t <= 2000:
+			s += 9
 		case t <= 2500:
-			s += 10
+			s += 6
 		case t <= 3000:
-			s += 5
+			s += 3
 		}
 	}
+	tps := firstOf(e.AvgTPS, e.TPS)
 	switch {
-	case e.TPS > 100:
+	case tps > 100:
 		s += 30
-	case e.TPS >= 50:
+	case tps >= 50:
 		s += 25
-	case e.TPS >= 40:
+	case tps >= 40:
 		s += 20
-	case e.TPS >= 30:
+	case tps >= 30:
 		s += 15
-	case e.TPS >= 20:
+	case tps >= 20:
 		s += 10
-	case e.TPS >= 15:
+	case tps >= 15:
 		s += 5
 	}
 	switch {
@@ -512,7 +639,7 @@ func Score(e SnapshotEntry) int {
 	case e.Context >= 100000:
 		s += 5
 	}
-	if l := e.Latency; l > 0 {
+	if l := firstOf(e.AvgLatency, e.Latency); l > 0 {
 		switch {
 		case l <= 1500:
 			s += 10
@@ -524,6 +651,18 @@ func Score(e SnapshotEntry) int {
 			s += 4
 		case l <= 4000:
 			s += 2
+		}
+	}
+	if e.Soon > 0 {
+		switch days := time.Unix(e.Soon, 0).Sub(now).Hours() / 24; {
+		case days <= 3:
+			s += 15
+		case days <= 7:
+			s += 12
+		case days <= 14:
+			s += 8
+		case days <= 30:
+			s += 4
 		}
 	}
 	return s

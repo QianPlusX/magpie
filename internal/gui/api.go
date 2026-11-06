@@ -2019,6 +2019,30 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
+	// and all of them at once, the Plugins tab's one switch: every plugin
+	// that checks in, plus the built-in switches they inherit from
+	mux.HandleFunc("POST /api/settings/plugin-checkins", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ On bool }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		s := settings.Load()
+		s.PluginCheckins = maps.Clone(s.PluginCheckins)
+		if s.PluginCheckins == nil {
+			s.PluginCheckins = map[string]bool{}
+		}
+		for _, p := range provider.PluginCheckins() {
+			s.PluginCheckins[p.ID] = in.On
+		}
+		s.WorkBuddyCheckin, s.TraeCheckin = in.On, in.On
+		s.MiniMaxCheckin, s.QoderCheckin = in.On, in.On
+		if err := settings.Save(s); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
 	// and a switch a plugin declares for its provider (auth.options, #2038),
 	// by the plugin's own provider id, handed to the running host at once
 	mux.HandleFunc("POST /api/settings/plugin-option", func(rw http.ResponseWriter, r *http.Request) {
