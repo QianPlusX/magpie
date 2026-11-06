@@ -22642,15 +22642,20 @@ function renderPluginCheckins(s) {
   allWho.append(el("div", "name", t("All daily check-ins")),
     el("div", "sub", t("Turn every plugin's daily check-in on or off at once")));
   const allBox = el("div");
-  allBox.append(segs([["off", t("Off")], ["on", t("On")]], ps.some((p) => p.on) ? "on" : "off", async (v) => {
+  const setAll = async (on) => {
     try {
-      prefs = await writingPrefs(api("settings/plugin-checkins", { on: v === "on" }));
+      prefs = await writingPrefs(api("settings/plugin-checkins", { on }));
       state.settings = prefs;
       renderPluginCheckins(prefs);
     } catch (err) {
       statusErr(err);
     }
-  }));
+  };
+  for (const [label, on] of [[t("All on"), true], [t("All off"), false]]) {
+    const b = el("button", "text", label);
+    b.onclick = () => setAll(on);
+    allBox.append(b);
+  }
   all.append(allWho, allBox);
   $("#pluginCheckinList").replaceChildren(all, ...ps.map((p) => {
     const row = el("div", "row pref");

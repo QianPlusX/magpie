@@ -168,6 +168,13 @@ func smartrouteRoutes(mux *http.ServeMux) {
 	// 供应商页勾了哪些，网关就只服务哪些
 	provider.SetCheckedModels(checkedModels)
 	startSmartrouteDiagnoser()
+	go func() {
+		// Settings asks for this whole state the first time it opens; the
+		// cold pass over every plugin costs seconds on a phone, so pay it
+		// here while nobody is waiting on it.
+		time.Sleep(2 * time.Second)
+		cachedSettings()
+	}()
 	startSmartrouteBusy()
 	go func() {
 		// the smart group has to exist before anyone opens the page:

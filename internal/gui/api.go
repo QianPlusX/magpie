@@ -724,6 +724,41 @@ func codexWindowUnder(st settings.Settings, model string) *codexRunWindow {
 	return &codexRunWindow{Model: model, Window: e.Context, Size: tokensSize(e.Context)}
 }
 
+// settingsCacheFor is how long GET /api/settings may answer from the last
+// body: settingsState costs a cold pass over every plugin (seconds on a
+// phone) and the page asks on each visit. A write drops it first; a write
+// that doesn't (a plugin installed from elsewhere) is at most this late.
+// ponytail: one global slot, per-page caching if a second caller needs it.
+const settingsCacheFor = 30 * time.Second
+
+var settingsCache struct {
+	mu   sync.Mutex
+	at   time.Time
+	body []byte
+}
+
+// cachedSettings is GET /api/settings' body, or nil when it has to be built.
+func cachedSettings() []byte {
+	settingsCache.mu.Lock()
+	defer settingsCache.mu.Unlock()
+	if settingsCache.body != nil && time.Since(settingsCache.at) < settingsCacheFor {
+		return settingsCache.body
+	}
+	b, err := json.Marshal(settingsState())
+	if err != nil {
+		return nil
+	}
+	settingsCache.body, settingsCache.at = b, time.Now()
+	return b
+}
+
+// dropSettingsCache is called after anything that changes what the page shows.
+func dropSettingsCache() {
+	settingsCache.mu.Lock()
+	settingsCache.body, settingsCache.at = nil, time.Time{}
+	settingsCache.mu.Unlock()
+}
+
 func settingsState() settingsJSON {
 	s := settingsJSON{Settings: settings.Load(), Version: Version, Dir: tilde(settings.Dir()), Portable: settings.Portable() != "", Gateway: gateway.URL()}
 	s.AddrEnv = os.Getenv("MAGPIE_ADDR")
@@ -1381,6 +1416,11 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	builtinRoutes(mux)
 	mux.HandleFunc("GET /api/settings", func(rw http.ResponseWriter, r *http.Request) {
 		access.MigrateLegacyLANKeyBestEffort()
+		if b := cachedSettings(); b != nil {
+			rw.Header().Set("Content-Type", "application/json")
+			_, _ = rw.Write(b)
+			return
+		}
 		writeJSON(rw, settingsState())
 	})
 	mux.HandleFunc("POST /api/settings", func(rw http.ResponseWriter, r *http.Request) {
@@ -1435,6 +1475,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		if in.UpdateChannel != cur.UpdateChannel && (!in.NoAutoUpdate || updates.json().Latest != "") && updates.begin() {
 			go updates.run()
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// whether usage reads as used or left: the Usage page's toggle and
@@ -1473,6 +1514,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// whether magpie searches for a model whose provider searches by itself
@@ -1491,6 +1533,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// whether agents' sign-ins are read and served as subscriptions
@@ -1528,6 +1571,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// whether the agents' lists name a model with its provider's after it or
@@ -1612,6 +1656,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// whether Claude Desktop lists a model of 1M or more once, by its 1M id
@@ -1713,6 +1758,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// where the Codex app's request to predict the user's next message
@@ -1736,6 +1782,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// where Codex's requests for a thread's title go (#705): "" as Codex
@@ -1776,6 +1823,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// the model an agent's request masking would change goes to as
@@ -1798,6 +1846,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// the model Codex's auto-review runs on (#938): "" as Codex picks it,
@@ -1946,6 +1995,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// and Trae CN's (#694)
@@ -1961,6 +2011,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// and MiniMax Code's (#811)
@@ -1976,6 +2027,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// and Qoder's daily credits
@@ -1991,6 +2043,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// and a plugin's own daily check-in, by its provider
@@ -2017,6 +2070,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// and all of them at once, the Plugins tab's one switch: every plugin
@@ -2041,6 +2095,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// and a switch a plugin declares for its provider (auth.options, #2038),
@@ -2108,6 +2163,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// how large the window and the panel are drawn: Settings' choice and
@@ -2178,6 +2234,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// an agent whose picks stay on this computer, or go to the others again
@@ -2208,6 +2265,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// the Usage page's order of its cards, which the tray panel's Allowances
@@ -2253,6 +2311,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	mux.HandleFunc("POST /api/settings/login", func(rw http.ResponseWriter, r *http.Request) {
@@ -2313,6 +2372,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// the allow list (lc on Discord): the addresses other computers may
@@ -2349,6 +2409,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// the gateway's port (Magic_zero on Discord), set on its own: it moves
@@ -2380,6 +2441,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// one masking rule changed in place (nf1qaz2w on Discord): the rule at
@@ -2406,6 +2468,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// what is done with a value of a kind found, other than masking it
@@ -2424,6 +2487,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// the values masking lets go as written, all of them each time (#1977)
@@ -2441,6 +2505,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// the GitHub token the library's requests to GitHub carry: set, or
@@ -2464,6 +2529,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// the GitHub download mirror updates come through (#893), the same
@@ -2490,6 +2556,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		dropSettingsCache()
 		writeJSON(rw, settingsState())
 	})
 	// a web search API added, given a new key or address, switched on or

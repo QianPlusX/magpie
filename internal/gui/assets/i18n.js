@@ -1295,6 +1295,8 @@ const I18N = {
     "last started {when}": "上次启动于{when}",
     "Daily check-in": "每日自动签到",
     "All daily check-ins": "全部签到",
+    "All on": "全部开启",
+    "All off": "全部关闭",
     "Turn every plugin's daily check-in on or off at once": "一次性把所有插件的每日签到打开或关闭",
     "Claims each signed-in China account's check-in credits once a day": "每天替每个已登录的国内版账号领取一次签到积分",
     "As pressing 签到 in WorkBuddy does": "和在 WorkBuddy 里点「签到」一样",
