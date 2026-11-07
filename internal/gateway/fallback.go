@@ -635,6 +635,12 @@ func planFallbackGroup(g provider.Group, ms []provider.Member, from provider.Pro
 // too, within its own order (#2255), before g's Sink orders the whole.
 // A member's fallbacks are not the group's.
 func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider.Protocol) ([]candidate, planned) {
+	if g.ID == "smart" {
+		// 页面上的分数序就是请求序：group 级若再按 Smart 重排一次（额度
+		// 快重置的账号优先、没有额度窗口的 API key 模型排后），页面的
+		// 第一名就永远轮不到，看到的顺序和实际用的完全是两套
+		g.Routing = provider.Ordered
+	}
 	var pl planned
 	var asides []candidate
 	var wAsides []Weighed
