@@ -12469,6 +12469,13 @@ async function followSignIn(id) {
     try { st = await api("signin/" + id); } catch { continue; }
     if (signing?.id !== id) continue;
     if (st.state === "waiting" || st.state === "installing") {
+      // 插件自己开出来的浏览器窗口（MClaw 这类）画在 rootfs 的 X 显示 :98 上，
+      // 手机上只有 noVNC(6081) 能看到，也没人替它弹窗——这里替它弹。
+      if (!signing.vncOpened && window.magpieNative && (st.opened || /mclaw/i.test(signing.agent || ""))) {
+        signing = { ...signing, vncOpened: true };
+        try { window.open("http://127.0.0.1:6081/vnc.html?autoconnect=1&resize=scale", "_blank"); } catch (e) { /* 被拦就算了 */ }
+        renderProviders();
+      }
       // the CLI it needed is in: now the vendor's page can open
       if (signing.state === "installing" && st.state === "waiting" && st.url && !st.opened && !signing.linkOnly) {
         openSignInPage(st.url).catch((e) => {
@@ -12487,7 +12494,7 @@ async function followSignIn(id) {
 
 // signingKept: a sign-in's site, way, account and proxy across updates
 function signingKept() {
-  return { site: signing.site, method: signing.method, inputs: signing.inputs, forUser: signing.forUser, picked: signing.picked, askProxy: signing.askProxy, customProxy: signing.customProxy, openError: signing.openError, linkOnly: signing.linkOnly };
+  return { site: signing.site, method: signing.method, inputs: signing.inputs, forUser: signing.forUser, picked: signing.picked, askProxy: signing.askProxy, customProxy: signing.customProxy, openError: signing.openError, linkOnly: signing.linkOnly, vncOpened: signing.vncOpened };
 }
 
 // signInProxyOf: the proxy an account's sign-in goes through when none is
