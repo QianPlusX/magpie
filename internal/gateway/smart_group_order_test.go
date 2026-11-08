@@ -1,20 +1,21 @@
 package gateway
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/yetone/magpie/internal/provider"
 )
 
-// 智能路由页把候选按分数排，网关也必须照这个顺序试。providers.json 里
-// group/smart 的 Routing 是空的（=Smart），group 级再按额度重置重排一遍
-// 就会把页面第一名的免费模型永远挤到后面。
+// 智能路由是页面自己的一套规则：候选顺序（页面分数序）就是请求序，网关
+// 组这一层不掺任何原版路由的判断——不按额度重排、不参与 Sink、不把休息
+// 中的成员挪到最后。原版各组照旧，两边互不影响。
 func TestSmartGroupKeepsListedOrder(t *testing.T) {
 	forgetSinks(t)
 	old := allowances
 	defer func() { allowances = old }()
-	// a 的额度二十天后才重置，b 的一小时后重置：Smart 会把 b 提前
+	// a 的额度二十天后才重置，b 的一小时后重置：原版 Smart 会把 b 提前
 	settled := map[string]provider.Allowance{
 		"late@x.com":  {{Used: 5, Span: 30 * 24 * time.Hour, Resets: time.Now().Add(20 * 24 * time.Hour)}},
 		"early@x.com": {{Used: 5, Span: 30 * 24 * time.Hour, Resets: time.Now().Add(time.Hour)}},
@@ -34,20 +35,34 @@ func TestSmartGroupKeepsListedOrder(t *testing.T) {
 		}
 		return out
 	}
+	s := &Server{}
 
-	// the group's own level, before planGroup has a say: Smart reweighs it
+	// a group of the user's, on Smart: the original rule still weighs it
 	var pl planned
 	var asides []candidate
 	var wAsides []Weighed
-	leveled := planLevel(provider.Group{ID: "smart", Name: "智能路由"}, ms, 0, provider.Chat, &pl, &asides, &wAsides, nil)
+	leveled := planLevel(provider.Group{ID: "g", Name: "G"}, ms, 0, provider.Chat, &pl, &asides, &wAsides, nil)
 	if got := ids(leveled); len(got) != 2 || got[0] != "b" {
-		t.Fatalf("planLevel order %v, want b first (b renews sooner)", got)
+		t.Fatalf("original group order %v, want b first (b renews sooner)", got)
 	}
 
-	// group/smart as providers.json has it (Routing empty): the page's order stands
-	s := &Server{}
-	out, _ := s.planGroup(provider.Group{ID: "smart", Name: "智能路由"}, ms, provider.Chat)
+	// the smart page's pool: the page's order stands, whoever renews sooner
+	out, _ := s.planGroup(provider.Group{ID: smartGroupID, Name: "智能路由"}, ms, provider.Chat)
 	if got := ids(out); len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Fatalf("group/smart order %v, want a b as listed", got)
+	}
+
+	// Sink on and a member rate limited: the original rule sends it last and
+	// keeps it in the list. The smart page's pool never sinks; a 429 on an
+	// account is the shared rest table's business, not a routing rule, so that
+	// account is skipped where it stands and the others keep their places.
+	rate := []byte(`{"error":{"message":"Too many requests"}}`)
+	if r := s.restAfter(out[0], 429, http.Header{}, rate); r.Why != failRate {
+		t.Fatalf("rest: %s", r.Why)
+	}
+	rested(out[0].restKey())
+	sunk, _ := s.planGroup(provider.Group{ID: smartGroupID, Name: "智能路由", Sink: true}, ms, provider.Chat)
+	if got := ids(sunk); len(got) != 1 || got[0] != "b" {
+		t.Fatalf("group/smart order %v after a 429, want just b", got)
 	}
 }

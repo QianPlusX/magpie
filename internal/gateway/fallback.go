@@ -622,6 +622,10 @@ func planFallbackGroup(g provider.Group, ms []provider.Member, from provider.Pro
 	return out
 }
 
+// smartGroupID is the pool the smart page writes its candidates into, in the
+// page's score order (internal/gui's ensureSmartGroup keeps it the same ID).
+const smartGroupID = "smart"
+
 // planGroup is plan for a routing group: every member's keys or accounts
 // weighed together as the group's routing says — in order, member by
 // member, each as its own provider's routing orders it; else all as one,
@@ -634,18 +638,18 @@ func planFallbackGroup(g provider.Group, ms []provider.Member, from provider.Pro
 // groups, never within them. A group in the group sinks by its own Sink
 // too, within its own order (#2255), before g's Sink orders the whole.
 // A member's fallbacks are not the group's.
+//
+// group/smart is the smart page's own pool, and it is kept apart: its order
+// is the page's score order, never the gateway's. It skips the group level's
+// weighing, Sink and restLast entirely; every other group keeps all three and
+// never looks at the smart page's state.
 func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider.Protocol) ([]candidate, planned) {
-	if g.ID == "smart" {
-		// 页面上的分数序就是请求序：group 级若再按 Smart 重排一次（额度
-		// 快重置的账号优先、没有额度窗口的 API key 模型排后），页面的
-		// 第一名就永远轮不到，看到的顺序和实际用的完全是两套
-		g.Routing = provider.Ordered
-	}
+	smart := g.ID == smartGroupID
 	var pl planned
 	var asides []candidate
 	var wAsides []Weighed
 	out := planLevel(g, ms, 0, from, &pl, &asides, &wAsides, nil)
-	if sinks(g.Sink, g.Routing) {
+	if !smart && sinks(g.Sink, g.Routing) {
 		out, pl.order = sinkPlanned(out, pl.order)
 	}
 	out, pl.order = append(out, asides...), append(pl.order, wAsides...)
@@ -656,7 +660,7 @@ func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider
 	placed(ms, pl.unlisted)
 	// 智能路由按候选顺序一个个试：不再用原版那套（休息中的挪到最后、
 	// 只留一个快恢复的探针）。顺序就是页面上的分数顺序。
-	if g.ID == "smart" {
+	if smart {
 		return keepOrder(out, pl)
 	}
 	return restLast(out, pl)
@@ -771,7 +775,9 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 		}
 		return cs
 	}
-	if routingOf(g.Routing) != provider.Ordered {
+	// the smart page's pool is planned for it by no group strategy of the
+	// gateway's: its order is the page's, decided in keepOrder
+	if g.ID != smartGroupID && routingOf(g.Routing) != provider.Ordered {
 		// what the group weighs: each of its models' keys or accounts,
 		// and each group in it as one — planned by its own routing, put
 		// where the one it would try first is, the rest of it after
