@@ -12470,10 +12470,11 @@ async function followSignIn(id) {
     if (signing?.id !== id) continue;
     if (st.state === "waiting" || st.state === "installing") {
       // 插件自己开出来的浏览器窗口（MClaw 这类）画在 rootfs 的 X 显示 :98 上，
-      // 手机上只有 noVNC(6081) 能看到，也没人替它弹窗——这里替它弹。
+      // 手机上只有串流页(6081)能看到，也没人替它弹窗——这里替它弹。
+      // voxl 的 ?token= 就是它自己的登录密码，页面会把后续连接一起带上。
       if (!signing.vncOpened && window.magpieNative && (st.opened || /mclaw/i.test(signing.agent || ""))) {
         signing = { ...signing, vncOpened: true };
-        try { window.open("http://127.0.0.1:6081/vnc.html?autoconnect=1&resize=scale", "_blank"); } catch (e) { /* 被拦就算了 */ }
+        try { window.open("http://127.0.0.1:6081/?token=magpiemobile1234", "_blank"); } catch (e) { /* 被拦就算了 */ }
         renderProviders();
       }
       // the CLI it needed is in: now the vendor's page can open
