@@ -3620,6 +3620,15 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 #view-settings .set-head { height: auto; min-height: 26px; flex: none; }
 .set-tabs { flex-wrap: wrap; row-gap: 2px; min-width: 0; }
 .set-tabs button { flex: none; white-space: nowrap; }
+/* a phone: the parts' tabs and the check-in's services keep one line and
+   scroll sideways, and the search takes a line of its own beneath them; wrapped,
+   the last tab was squeezed into a stack of single characters */
+@media (max-width: 700px) {
+  #view-settings .set-q { flex: 1 1 100%; width: 100%; margin-left: 0; min-width: 0; }
+  .set-tabs, .warm-tabs { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain; }
+  .set-tabs::-webkit-scrollbar, .warm-tabs::-webkit-scrollbar { display: none; }
+  .set-tabs { flex: 1 1 100%; min-width: 0; }
+}
 .set-page { flex: none; }
 .set-page[hidden] { display: none; }
 /* Settings' search: the box at the end of the tabs, on a line of its own
