@@ -286,7 +286,7 @@ func (l *lanes) free(who string, limit int) bool {
 // is one resting: its lane is free because it is resting, and a request
 // handed to it for want of a slot would only ask it again before its rest
 // is out.
-func (s *Server) laneMate(cands []candidate, i int, group bool, gave map[string]bool) int {
+func (s *Server) laneMate(cands []candidate, i int, group, strict bool, gave map[string]bool) int {
 	c := cands[i]
 	who := c.who()
 	if gave[who] || s.ready(c) {
@@ -295,6 +295,10 @@ func (s *Server) laneMate(cands []candidate, i int, group bool, gave map[string]
 	for j := i + 1; j < len(cands); j++ {
 		m := cands[j]
 		if m.who() == who || !group && m.p.ID != c.p.ID || m.reserve > 0 {
+			continue
+		}
+		// 智能路由只让同一个模型的其它账号/密钥先走，别的模型不插队
+		if strict && (m.p.ID != c.p.ID || m.model != c.model) {
 			continue
 		}
 		if _, resting := restedUntil(m); resting {
@@ -331,7 +335,7 @@ func restedUntil(c candidate) (time.Time, bool) {
 // then when the soonest of those left out only for resting is back (zero
 // for none), for the request to look again then. A fallback provider is
 // never one, as with laneMate.
-func (s *Server) waitMate(cands []candidate, i int, group bool, gave map[string]bool, planned []candidate) (mate candidate, release func(), next time.Time, ok bool) {
+func (s *Server) waitMate(cands []candidate, i int, group, strict bool, gave map[string]bool, planned []candidate) (mate candidate, release func(), next time.Time, ok bool) {
 	c := cands[i]
 	who := c.who()
 	seat := func(m candidate) string { return m.who() + "|" + m.model }
@@ -373,6 +377,10 @@ func (s *Server) waitMate(cands []candidate, i int, group bool, gave map[string]
 	}
 	for _, m := range pool {
 		if m.who() == who || gave[m.who()] || !group && m.p.ID != c.p.ID {
+			continue
+		}
+		// 智能路由的队列只等同一个模型的其它账号/密钥
+		if strict && (m.p.ID != c.p.ID || m.model != c.model) {
 			continue
 		}
 		if until, resting := restedUntil(m); resting {

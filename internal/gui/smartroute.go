@@ -247,10 +247,17 @@ func syncSmartBusy() {
 	if gw == nil {
 		return
 	}
-	out := map[string]int{}
+	out := map[string]int{}    // requests in flight, by provider
+	trying := map[string]int{} // and by the model a try is actually on
 	for _, a := range gw.Active() {
-		if a.Provider != "" {
-			out[a.Provider]++
+		if a.Provider == "" {
+			continue
+		}
+		out[a.Provider]++
+		// a group's request is on one member at a time: 「回答中」 marks that
+		// one, not every model of its provider (the user: 显示要对上顺序)
+		if a.TryingProvider != "" && a.Trying != "" {
+			trying[a.TryingProvider+"/"+a.Trying]++
 		}
 	}
 	// a provider's own lane (not one of its keys or accounts) carries the
@@ -265,10 +272,9 @@ func syncSmartBusy() {
 	store := smartroute.Open()
 	for _, p := range providersState().Providers {
 		busy := limit[p.ID] > 0 && out[p.ID] >= limit[p.ID]
-		answering := out[p.ID] > 0
 		for _, m := range p.Models {
 			store.SetBusy(p.ID, m.ID, busy)
-			store.SetAnswering(p.ID, m.ID, answering)
+			store.SetAnswering(p.ID, m.ID, trying[p.ID+"/"+m.ID] > 0)
 		}
 	}
 }

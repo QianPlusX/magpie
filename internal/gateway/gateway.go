@@ -2699,6 +2699,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			fastPick(cands, pl, p.ID, model, provider.IsUltraPick(agent, p.ID+"/"+model))
 		}
 	}
+	// 智能路由是它自己的一套规则：候选顺序就是页面上的分数顺序，不套用
+	// 原版路由的并发让位、休息探针这些重排。某个候选这刻满了，就在它的
+	// 队列里等，而不是跳到后面的候选去。
+	smartTop := isGroup && g.ID == smartGroupID
 	agentPick := provider.AgentEffort(agent)
 	if sealedTask {
 		cands, pl = s.sealedReaders(cands, pl, sealers)
@@ -2958,7 +2962,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// of those resting, only the one back soonest is asked (#1799); the
 	// whole list still finds a Codex account to spend a reset on
 	all := cands
-	cands = probeOne(cands)
+	if !smartTop {
+		cands = probeOne(cands)
+	}
 	var cacheReport *Request
 	if wantsClientCache(r, from) && slices.ContainsFunc(cands, func(c candidate) bool { return c.p.Account != nil && c.p.Account.Agent == "claude" }) {
 		var err error
@@ -3126,7 +3132,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		}
 		if handed.release != nil {
 			// it holds a slot of this one already: no giving way
-		} else if j := s.laneMate(cands, i, isGroup, gaveWay); j > i {
+		} else if j := s.laneMate(cands, i, isGroup, smartTop, gaveWay); j > i {
 			// its key or account is full, and another of its provider's,
 			// or of its group, has a slot free: that one is asked first,
 			// this one keeps its place after it (#892)
@@ -3468,6 +3474,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		window := windowOf(c.p, c.model) // as the route's end reads it
 		s.trace.update(tr, func(t *Route) {
 			t.imageProvider = c.p.ID
+			t.Trying, t.TryingProvider = c.model, c.p.ID
 			t.Tries = append(t.Tries, Try{ID: c.rest, Model: c.model, Effort: sent, Picked: picked, Fixed: fixed, RuleEffort: ruled, Fast: fast, Start: began})
 			t.window = window
 			if t.Prompt != nil && !t.Done {
@@ -3572,7 +3579,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				// Discord: the requests already waiting for a third ZCode
 				// account waited on once the first two were back)
 				release, inLane, err = s.lanes.take(ctx, c.who(), c.p.LaneLimit(), c.p.QueueLimit, time.Duration(c.p.QueueWait)*time.Second, func() (bool, time.Time) {
-					m, rel, next, ok := s.waitMate(cands, i, isGroup, gaveWay, all)
+					m, rel, next, ok := s.waitMate(cands, i, isGroup, smartTop, gaveWay, all)
 					if !ok {
 						return false, next
 					}

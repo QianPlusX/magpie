@@ -81,10 +81,16 @@ type Route struct {
 	Effort        string       `json:"effort,omitempty"`        // the reasoning the agent asked for; "" for none
 	Tier          string       `json:"tier,omitempty"`          // the service tier the agent asked for (bodyTier); "" for none
 	Provider      string       `json:"provider"`                // the provider the model resolved to
-	Group         *GroupRef    `json:"group,omitempty"`         // the routing group the agent asked for
-	Rule          *RuleHit     `json:"rule,omitempty"`          // the group's rules for it, when it has any
-	SealedTask    bool         `json:"sealedTask,omitempty"`    // only ChatGPT accounts can read this subagent's task
-	LeadAccount   string       `json:"leadAccount,omitempty"`   // the parent account put first for a sealed task
+	// Trying: the model and provider the try under way is going to, set as
+	// it goes out. Model/Provider above are what the agent asked for, which
+	// for a routing group is the group itself; this is who is answering
+	// right now (the smart page says 「回答中」 only on that one).
+	Trying         string    `json:"trying,omitempty"`
+	TryingProvider string    `json:"tryingProvider,omitempty"`
+	Group          *GroupRef `json:"group,omitempty"`       // the routing group the agent asked for
+	Rule           *RuleHit  `json:"rule,omitempty"`        // the group's rules for it, when it has any
+	SealedTask     bool      `json:"sealedTask,omitempty"`  // only ChatGPT accounts can read this subagent's task
+	LeadAccount    string    `json:"leadAccount,omitempty"` // the parent account put first for a sealed task
 	// Compaction: the key or account that sealed the native compaction
 	// the request carries, the only one it went to (#1099): Routing says
 	// so, not that it is the only one on for the model (#2639)

@@ -30,6 +30,10 @@ type Active struct {
 	Millis   int64     `json:"ms"`
 	Phase    string    `json:"phase,omitempty"`
 	Route    int64     `json:"route,omitempty"` // its routing trace's id
+	// Trying: the member answering now, when the agent asked for a routing
+	// group (Model above is then the group); "" before the first try.
+	Trying         string `json:"trying,omitempty"`
+	TryingProvider string `json:"tryingProvider,omitempty"`
 }
 
 // inflight is a request counted for Busy, kept on its context so routing
@@ -178,6 +182,7 @@ func (s *Server) Active() []Active {
 		if rt := f.route.Load(); rt != nil {
 			s.trace.mu.Lock()
 			a.Route, a.Model, a.Provider = rt.ID, rt.Model, rt.Provider
+			a.Trying, a.TryingProvider = rt.Trying, rt.TryingProvider
 			if rt.Agent != "" {
 				a.Agent = rt.Agent
 			}
