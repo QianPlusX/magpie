@@ -190,20 +190,59 @@ func RestingFor(providerID, model string, now time.Time) (time.Time, bool) {
 	defer restingUntil.Unlock()
 	var until time.Time
 	for id, u := range restingUntil.m {
-		if !now.Before(u) || !u.After(until) {
-			continue
+		if now.Before(u) && u.After(until) && restsFor(id, providerID, model) {
+			until = u
 		}
-		tail, ok := strings.CutPrefix(id, providerID)
-		if !ok || (tail != "" && tail[0] != '@' && tail[0] != '#' && tail[0] != '/') {
-			continue // another provider whose id starts with the same letters
-		}
-		// tail is "" (the provider), "@user" (the account), "#key" (a key),
-		// "@user/<model>" or "#key/<model>" (one model of it), "/<model>"
-		if i := strings.IndexByte(tail, '/'); i >= 0 && tail[i+1:] != model {
-			continue
-		}
-		until = u
 	}
 	return until, !until.IsZero()
+}
+
+// restsFor is whether a rest id names providerID's model: the provider
+// itself, one of its accounts (id@user) or keys (id#key), or one model of
+// those (…/model). Another provider whose id starts with the same letters
+// is not it, and neither is another model of the same account or key.
+func restsFor(id, providerID, model string) bool {
+	tail, ok := strings.CutPrefix(id, providerID)
+	if !ok || (tail != "" && tail[0] != '@' && tail[0] != '#' && tail[0] != '/') {
+		return false
+	}
+	if i := strings.IndexByte(tail, '/'); i >= 0 && tail[i+1:] != model {
+		return false
+	}
+	return true
+}
+
+// UnrestModel lifts every rest that keeps providerID's model out — the
+// provider's, its accounts' and its keys' — for the smart routing page's
+// 「结束冷却」. The page shows those rests as 冷却中, so the button has to
+// lift what the gateway holds too: clearing only the page's own record
+// brings the rest back on the next poll.
+func (s *Server) UnrestModel(providerID, model string, now time.Time) int {
+	restingUntil.Lock()
+	keys := make([]string, 0, 4)
+	kept := false
+	for k := range restingUntil.m {
+		if !restsFor(k, providerID, model) {
+			continue
+		}
+		kept = kept || ladderRest(restingUntil.note[k])
+		delete(restingUntil.m, k)
+		delete(restingUntil.note, k)
+		liftedLocked(k, now)
+		keys = append(keys, k)
+	}
+	restingUntil.Unlock()
+	if len(keys) == 0 {
+		return 0
+	}
+	if kept {
+		saveRests()
+	}
+	for _, k := range keys {
+		unsink(k)
+	}
+	s.trace.lifted()
+	s.lanes.signal()
+	return len(keys)
 }
 

@@ -54,3 +54,20 @@ func TestRestingForForgetsAnEndedRest(t *testing.T) {
 		t.Fatal("a rest that ended is not a rest")
 	}
 }
+
+func TestUnrestModelLiftsOnlyThatModelsRests(t *testing.T) {
+	now := time.Now()
+	later := now.Add(5 * time.Hour)
+	restForSeed(t, "probeunrest@acct", later)
+	restForSeed(t, "probeunrest@acct2/other-model", later)
+	if n := (&Server{}).UnrestModel("probeunrest", "picked", now); n != 1 {
+		t.Fatalf("lifted %d rests, want the account's one", n)
+	}
+	if _, ok := RestingFor("probeunrest", "picked", now); ok {
+		t.Fatal("the account's rest must be lifted")
+	}
+	if _, ok := RestingFor("probeunrest", "other-model", now); !ok {
+		t.Fatal("another model's own rest stays")
+	}
+}
+

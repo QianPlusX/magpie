@@ -221,6 +221,11 @@ func smartrouteRoutes(mux *http.ServeMux) {
 		}
 		smartroute.Open().ClearRest(in.Provider, in.Model)
 		now := time.Now()
+		// 页面上「冷却中」的模型有些是网关在休息（额度用尽、限流）：只清
+		// store 的话，下一次轮询它又回来了，「结束冷却」像没反应一样
+		if gw := served.Load(); gw != nil {
+			gw.UnrestModel(in.Provider, in.Model, now)
+		}
 		writeJSON(rw, map[string]any{"now": now.UnixMilli(), "entries": smartrouteSnapshot(now)})
 	})
 	mux.HandleFunc("POST /api/smartroute/toggle", func(rw http.ResponseWriter, r *http.Request) {
