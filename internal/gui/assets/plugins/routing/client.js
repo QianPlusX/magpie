@@ -8378,7 +8378,21 @@ function smartRoutePage() {
       groups[k].sort((a, b) => scoreOf(b) - scoreOf(a)
         || String(a.provider + a.model).localeCompare(String(b.provider + b.model)));
     }
-    const bar = SUB.map((k) => `<button data-sub="${k}" class="${k === cur ? "on" : ""}">${NAMES[k]} ${groups[k].length}</button>`).join("");
+    // 冷却胶囊带倒计时：取这组里最早恢复的那个，不点进去也知道还要等多久
+    const coolLeft = () => {
+      let ms = Infinity;
+      for (const e of groups.cooling) {
+        for (const v of [e.coolingUntil, e.restUntil]) {
+          if (!v || String(v).startsWith("0001")) continue;
+          const d = new Date(v) - Date.now();
+          if (d > 0 && d < ms) ms = d;
+        }
+      }
+      if (!isFinite(ms)) return "";
+      const s = Math.round(ms / 1000);
+      return " · " + (s >= 3600 ? Math.round(s / 3600) + "小时后" : s >= 60 ? Math.round(s / 60) + "分钟后" : s + "秒后");
+    };
+    const bar = SUB.map((k) => `<button data-sub="${k}" class="${k === cur ? "on" : ""}">${NAMES[k]} ${groups[k].length}${k === "cooling" ? coolLeft() : ""}</button>`).join("");
     const list = (groups[cur] || []).map(item).join("");
     const emptyText = cur === "excluded" ? "没有未参与的模型：点模型右边的「不参与」移出智能路由"
       : cur === "diagnosing" ? "没有待诊断的模型" : "这里还没有模型";
