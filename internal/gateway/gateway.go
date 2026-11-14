@@ -2643,6 +2643,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	}
 	// a careful provider's capped accounts read again now where what is
 	// known of their usage is too old to send on (plugins#349)
+	carefulBegan := time.Now()
 	if isGroup {
 		if ps, models := carefulOf(p, model, ms); anyCareful(ps) {
 			readCareful(r.Context(), ps, models)
@@ -2651,6 +2652,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		if ps, models := carefulOf(p, model, nil); anyCareful(ps) {
 			readCareful(r.Context(), ps, models)
 		}
+	}
+	// 额度可疑时会同步去上游读一次，最长等 carefulWait：慢请求要能看见
+	// 这段花掉多少，否则只会看到「第一条尝试晚了几十秒」
+	if d := time.Since(carefulBegan); d > 500*time.Millisecond {
+		log.Printf("gateway: %s: allowance reading took %s", call.Model, d.Round(time.Millisecond))
 	}
 	// the primary, then its fallbacks while it can't take the request and
 	// nothing has been sent yet
