@@ -145,6 +145,9 @@ type Entry struct {
 	// candidate.rest（"provider@user" / "provider#keyid"）。一个账号失败只让
 	// 它自己歇着，网关接着试下一个账号；都失败才走模型级的计数与禁用
 	Accounts map[string]time.Time `json:"accounts,omitempty"`
+	// Seats: 这个模型有几个能试的账号/Key（多账号供应商），网关记失败时
+	// 写上；账号全在冷却时模型整体算「冷却中」。单账号是 0。
+	Seats int `json:"seats,omitempty"`
 	// DisabledUntil: out until then, having failed FailuresBeforeDisabled in a row
 	DisabledUntil time.Time `json:"disabledUntil,omitempty"`
 	// Busy: its concurrency limit is reached
@@ -165,6 +168,10 @@ func (e *Entry) StateNow(now time.Time) State {
 		return Disabled
 	case !e.RestUntil.IsZero() && now.Before(e.RestUntil):
 		return Cooling
+	case e.allSeatsCooling(now):
+		// 多账号/多 Key 供应商：每个账号各歇各的，全都歇着时模型整体
+		// 没有可试的账号，页面就该把它放进「冷却中」
+		return Cooling
 	case e.Busy:
 		return Busy
 	case e.Failures > 0 || e.LastOK.IsZero():
@@ -177,6 +184,35 @@ func (e *Entry) StateNow(now time.Time) State {
 		return Diagnosing
 	}
 	return Candidate
+}
+
+// allSeatsCooling 说这个模型背后的账号是不是全在冷却：Seats 是网关记
+// 失败时告诉的账号数（1 表示单账号，走 RestUntil），Accounts 里只有失
+// 败过的账号，没失败过的不在里面——所以是「冷却的账号数 >= 账号总数」，
+// 而不是「Accounts 里每个都在冷却」。
+func (e *Entry) allSeatsCooling(now time.Time) bool {
+	if e.Seats <= 0 || len(e.Accounts) == 0 {
+		return false
+	}
+	live := 0
+	for _, until := range e.Accounts {
+		if now.Before(until) {
+			live++
+		}
+	}
+	return live >= e.Seats
+}
+
+// coolingUntil 是账号冷却里最晚的一个：模型整体进冷却时页面拿它倒计时。
+// 模型级 RestUntil 只管单账号，多账号时它是零值。
+func (e *Entry) coolingUntil(now time.Time) time.Time {
+	last := e.RestUntil
+	for _, until := range e.Accounts {
+		if now.Before(until) && until.After(last) {
+			last = until
+		}
+	}
+	return last
 }
 
 // Store is smartroute.json, read at start-up and written on every change.
@@ -322,46 +358,69 @@ func (s *Store) Succeeded(provider, model, rest string, ttft, tps, latency float
 // the reason and the time only, so a misconfigured magpie never disables
 // every model in a row.
 func (s *Store) Failed(provider, model, rest string, f Failure) {
-	s.Update(provider, model, func(e *Entry) {
-		now := time.Now()
-		if f.Reason == "" {
-			f.Reason = string(f.Kind)
-		}
-		// 中断不是模型不可用（上游说完一半断开，或客户端自己取消）：
-		// 记下这次错，但不动状态、不清指标、不冷却
-		if f.Kind == KindInterrupted {
-			e.LastError = f.Reason
-			e.LastTry = now
-			e.Kind = f.Kind
-			return
-		}
+	s.FailedOf(provider, model, rest, 0, f)
+}
+
+// FailedOf 同 Failed，seats 是这个模型背后能试的账号/Key 数（网关给的），
+// 账号全在冷却时 StateNow 才算模型整体不可用。
+func (s *Store) FailedOf(provider, model, rest string, seats int, f Failure) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// 只更新页面上真列着的模型：restAfterMarked 是所有路由共用的记账点，
+	// 让一个没进过 store 的模型在这里凭空长条目，池子会被别的路由撑大
+	e, ok := s.entries[Key(provider, model)]
+	if !ok {
+		return
+	}
+	defer s.save()
+	now := time.Now()
+	if f.Reason == "" {
+		f.Reason = string(f.Kind)
+	}
+	// 中断不是模型不可用（上游说完一半断开，或客户端自己取消）：
+	// 记下这次错，但不动状态、不清指标、不冷却
+	if f.Kind == KindInterrupted {
 		e.LastError = f.Reason
 		e.LastTry = now
-		e.TTFT, e.TPS = 0, 0
 		e.Kind = f.Kind
-		// 多账号供应商：一个账号失败不该把整个模型踢出候选池，只让它自己歇一会儿，
-		// 网关接着试下一个账号；都失败时这一轮才真的没有候选，连续失败照常累计
-		// （成功一次就清零）。单账号时照旧，模型自己就是那个账号。
-		multi := rest != "" && rest != provider
-		if multi {
-			if e.Accounts == nil {
-				e.Accounts = map[string]time.Time{}
-			}
-			e.Accounts[rest] = now.Add(f.Rest())
+		return
+	}
+	e.LastError = f.Reason
+	e.LastTry = now
+	e.Kind = f.Kind
+	// 多账号供应商：一个账号失败不该把整个模型踢出候选池，只让它自己歇一会儿，
+	// 网关接着试下一个账号；都失败时这一轮才真的没有候选，连续失败照常累计
+	// （成功一次就清零）。单账号时照旧，模型自己就是那个账号。
+	multi := rest != "" && rest != provider
+	// 同理别把一个账号的失败算成整个模型没量出首字：另一个账号刚答过，
+	// 清掉这个数会让模型退回「检测中」，页面上看着像模型坏了
+	if !multi {
+		e.TTFT, e.TPS = 0, 0
+	}
+	if multi {
+		if e.Accounts == nil {
+			e.Accounts = map[string]time.Time{}
 		}
-		// 只有真·抖动（上游故障/超时/未知）累计连续失败；其余按自己的时长
-		// 歇一会儿就回候选，不该把一次配置错误算成模型坏了
-		if f.Counts() {
-			e.Failures++
-			if e.Failures >= FailuresBeforeDisabled {
-				e.DisabledUntil = now.Add(DisabledFor)
-				return
-			}
+		e.Accounts[rest] = now.Add(f.Rest())
+		if seats > 0 {
+			e.Seats = seats
 		}
-		if !multi {
-			e.RestUntil = now.Add(f.Rest())
+	} else {
+		// 单账号：模型级冷却就够，别留着上一个多账号时代的座位数
+		e.Seats = 0
+	}
+	// 只有真·抖动（上游故障/超时/未知）累计连续失败；其余按自己的时长
+	// 歇一会儿就回候选，不该把一次配置错误算成模型坏了
+	if f.Counts() {
+		e.Failures++
+		if e.Failures >= FailuresBeforeDisabled {
+			e.DisabledUntil = now.Add(DisabledFor)
+			return
 		}
-	})
+	}
+	if !multi {
+		e.RestUntil = now.Add(f.Rest())
+	}
 }
 
 // SetExcluded takes a model out of the running, or puts it back.
@@ -370,11 +429,14 @@ func (s *Store) SetExcluded(provider, model string, excluded bool) {
 }
 
 // ClearRest 结束一次冷却/禁用并把连续失败清零：手动按钮用，让一个
-// 已经确定可用的模型不用干等 30 秒（或 24 小时）。
+// 已经确定可用的模型不用干等 30 秒（或 24 小时）。多账号模型连各账号
+// 自己的冷却一起清掉，否则页面写着「结束冷却」按了却没反应。
 func (s *Store) ClearRest(provider, model string) {
 	s.Update(provider, model, func(e *Entry) {
 		e.RestUntil = time.Time{}
 		e.DisabledUntil = time.Time{}
+		e.Accounts = nil
+		e.Seats = 0
 		e.Failures = 0
 		e.LastError = ""
 	})
@@ -535,6 +597,9 @@ type SnapshotEntry struct {
 	// Trying: 这会儿真有一个探针在跑。页面靠它决定画不画那颗「正在测」的
 	// 闪烁球——「检测中」这个状态只说明上次失败或还没测过，不代表正在测。
 	Trying bool `json:"trying,omitempty"`
+	// CoolingUntil: 多账号时模型整体进了冷却，账号冷却里最晚的一个；
+	// RestUntil 在那种情况是零值，页面拿这个倒计时
+	CoolingUntil time.Time `json:"coolingUntil,omitempty"`
 	// 排序用的平均值（见 Entry.average），卡片上仍显示最近一次的数
 	AvgTTFT    float64 `json:"avgTtft,omitempty"`
 	AvgTPS     float64 `json:"avgTps,omitempty"`
@@ -548,10 +613,11 @@ func (s *Store) Snapshot(now time.Time) []SnapshotEntry {
 	for _, e := range s.entries {
 		at, held := s.trying[e.Provider+"/"+e.Model]
 		out = append(out, SnapshotEntry{Entry: e, State: e.StateNow(now),
-			Trying:     held && time.Since(at) < tryingFor,
-			AvgTTFT:    e.average(func(s Sample) float64 { return s.TTFT }),
-			AvgTPS:     e.average(func(s Sample) float64 { return s.TPS }),
-			AvgLatency: e.average(func(s Sample) float64 { return s.Latency })})
+			Trying:       held && time.Since(at) < tryingFor,
+			CoolingUntil: e.coolingUntil(now),
+			AvgTTFT:      e.average(func(s Sample) float64 { return s.TTFT }),
+			AvgTPS:       e.average(func(s Sample) float64 { return s.TPS }),
+			AvgLatency:   e.average(func(s Sample) float64 { return s.Latency })})
 	}
 	sortEntries(out)
 	return out

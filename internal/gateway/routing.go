@@ -1220,12 +1220,19 @@ const restErrorRunes = 300
 
 // restAfter sets a failed candidate aside for as long as its failure says.
 func (s *Server) restAfter(c candidate, status int, header http.Header, body []byte) Rest {
-	// the smart routing page: a failure it can count, or one that is the
-	// configuration's (4xx) and only keeps its words
-	if c.p.ID != "" && c.model != "" && status >= 400 {
-		smartroute.Open().Failed(c.p.ID, c.model, c.rest, smartroute.Classify(status, header, body))
-	}
 	return s.restAfterMarked(c, status, header, body, openRouterSharedPool(body))
+}
+
+// seatsOf 是这个候选背后能试的账号/Key 数：多账号供应商让智能路由知道
+// 「全都冷却了」才算模型整体不可用，而不是第一个账号失败就整模型进冷却。
+func seatsOf(c candidate) int {
+	if c.p.Account != nil {
+		return 1 + len(c.p.AlsoOn())
+	}
+	if n := len(c.p.KeysOn()); n > 1 {
+		return n
+	}
+	return 1
 }
 
 // reasonOf is the short words a failure is kept as: its status and the
@@ -1247,6 +1254,13 @@ func reasonOf(status int, body []byte) string {
 // restAfterMarked keeps an upstream routing fact through gateway error
 // translation without putting it in the response sent to the client.
 func (s *Server) restAfterMarked(c candidate, status int, header http.Header, body []byte, sharedPool bool) Rest {
+	// the smart routing page: a failure it can count, or one that is the
+	// configuration's (4xx) and only keeps its words. 主路径（流的每一次
+	// 尝试失败）都从这里出去，记在这里才不会漏——只记在 restAfter 里
+	// 会让智能路由页永远显示「候选」，失败过的模型照样排在最前面
+	if c.p.ID != "" && c.model != "" && status >= 400 {
+		smartroute.Open().FailedOf(c.p.ID, c.model, c.rest, seatsOf(c), smartroute.Classify(status, header, body))
+	}
 	// an error carried under a 200 rests as its own status would, and
 	// says that status where the rest is shown
 	status = carriedStatus(status, body)

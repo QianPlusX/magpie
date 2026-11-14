@@ -8287,9 +8287,14 @@ function smartRoutePage() {
     // 说它是「可用」又在下面写一条错，自相矛盾
     if (e.state !== "excluded" && e.state !== "candidate" && e.kind && KIND_HINTS[e.kind]) notes.push(KIND_HINTS[e.kind]);
     if (e.failures) notes.push("连续失败 " + e.failures);
-    if (e.state === "cooling" && e.restUntil) {
-      const left = Math.max(0, Math.round((new Date(e.restUntil) - Date.now()) / 1000));
-      notes.push(left + "s 后重试");
+    // 多账号/多 Key 的模型各账号自己歇着，模型整体的恢复时间是 coolingUntil；
+    // 单账号才用 restUntil。零值时间（0001-…）当没有
+    const until = [e.coolingUntil, e.restUntil]
+      .find((v) => v && !String(v).startsWith("0001")) || "";
+    if (e.state === "cooling" && until) {
+      const left = Math.max(0, Math.round((new Date(until) - Date.now()) / 1000));
+      notes.push(left >= 3600 ? Math.round(left / 3600) + " 小时后恢复"
+        : left >= 60 ? Math.round(left / 60) + " 分钟后重试" : left + "s 后重试");
     }
     if (e.state === "disabled" && e.disabledUntil) {
       const left = Math.max(0, Math.round((new Date(e.disabledUntil) - Date.now()) / 3600000));

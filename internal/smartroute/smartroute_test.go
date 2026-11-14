@@ -160,6 +160,40 @@ func TestOneAccountFailingLeavesTheModelRoutable(t *testing.T) {
 	}
 }
 
+// 全部账号都在冷却才算模型整体冷却：只判「Accounts 里有条目」会让挂着一
+// 个失败账号的可答模型一直显示冷却，而只判 RestUntil 又让多账号模型永远
+// 停在「候选」——页面上的失败像没发生过（候选 56、冷却 0）。
+func TestEveryAccountCoolingCoolsTheModel(t *testing.T) {
+	s := tempStore(t)
+	join(s, Ref{Provider: "trae", Model: "qwen"})
+	s.Succeeded("trae", "qwen", "", 500, 50, 1200)
+	s.FailedOf("trae", "qwen", "trae@a", 2, Failure{Kind: KindRateLimited, Reason: "429"})
+	if e := one(t, s); e.State != Candidate {
+		t.Fatalf("两个账号只歇了一个，模型仍能答，实际 %s", e.State)
+	}
+	now := time.Now()
+	s.FailedOf("trae", "qwen", "trae@b", 2, Failure{Kind: KindRateLimited, Reason: "429"})
+	e := one(t, s)
+	if e.State != Cooling {
+		t.Fatalf("两个账号都在冷却，模型应进冷却组，实际 %s", e.State)
+	}
+	if !e.CoolingUntil.After(now) {
+		t.Fatalf("冷却中的模型要给出恢复时间，实际 %v", e.CoolingUntil)
+	}
+	if s.ExcludedOrCooling("trae", "qwen", now) != true {
+		t.Fatal("全账号冷却的模型，网关也该跳过它")
+	}
+	// 冷却过期后回候选
+	s.Update("trae", "qwen", func(e *Entry) {
+		for k := range e.Accounts {
+			e.Accounts[k] = now.Add(-time.Second)
+		}
+	})
+	if e := one(t, s); e.State != Candidate {
+		t.Fatalf("账号冷却过期后应回候选，实际 %s", e.State)
+	}
+}
+
 func TestRecentAverageDropsTheOutliers(t *testing.T) {
 	// 十条：最大 6000 与最小 100 各一条被丢掉
 	e := &Entry{Recent: []Sample{

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/smartroute"
 )
 
 // 智能路由是页面自己的一套规则：候选顺序（页面分数序）就是请求序，网关
@@ -36,6 +37,12 @@ func TestSmartGroupKeepsListedOrder(t *testing.T) {
 		return out
 	}
 	s := &Server{}
+	// 智能路由的成员本来就来自页面自己的 store，状态机也只认 store 里列着的
+	// 模型：这两个假的模型先放进去，上一次跑剩的冷却先清掉
+	for _, id := range []string{"a", "b"} {
+		smartroute.Open().Get(id, "m", time.Now())
+		smartroute.Open().ClearRest(id, "m")
+	}
 
 	// a group of the user's, on Smart: the original rule still weighs it
 	var pl planned
