@@ -76,6 +76,22 @@ func TestSuccessClearsFailuresAndCooling(t *testing.T) {
 	}
 }
 
+// 并发满也是页面的一格：网关把「这个供应商的槽位用完了」写进 store，
+// 页面的「并发满」分组靠它才有内容，槽位一空出来就回候选。
+func TestBusyIsItsOwnGroup(t *testing.T) {
+	s := tempStore(t)
+	join(s, Ref{Provider: "p", Model: "m"})
+	s.Succeeded("p", "m", "p", 300, 42, 1500)
+	s.SetBusy("p", "m", true)
+	if e := one(t, s); e.State != Busy {
+		t.Fatalf("槽位用完应在并发满，实际 %s", e.State)
+	}
+	s.SetBusy("p", "m", false)
+	if e := one(t, s); e.State != Candidate {
+		t.Fatalf("槽位空出应回候选，实际 %s", e.State)
+	}
+}
+
 func TestExcludedStaysOut(t *testing.T) {
 	s := tempStore(t)
 	s.Ensure([]Ref{{Provider: "p", Model: "m"}})

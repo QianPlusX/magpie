@@ -260,14 +260,20 @@ func syncSmartBusy() {
 			trying[a.TryingProvider+"/"+a.Trying]++
 		}
 	}
-	// a provider's own lane (not one of its keys or accounts) carries the
-	// limit its requests wait on
+	// 一个供应商的槽位可能拆在几条 lane 上：它自己的主 lane，以及每个
+	// Key/账号各一条（provider#key、provider@user）。多账号供应商的请求
+	// 全落在账号 lane 上，主 lane 里压根没有条目——只看不带 #@ 的那些，
+	// 「并发满」对它们永远是 0。按供应商把各 lane 的上限加总。
 	limit := map[string]int{}
 	for who, ln := range gw.Lanes() {
-		if ln.Limit <= 0 || strings.ContainsAny(who, "#@") {
+		if ln.Limit <= 0 {
 			continue
 		}
-		limit[who] = ln.Limit
+		pid := who
+		if i := strings.IndexAny(who, "#@"); i > 0 {
+			pid = who[:i]
+		}
+		limit[pid] += ln.Limit
 	}
 	store := smartroute.Open()
 	for _, p := range providersState().Providers {
