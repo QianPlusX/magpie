@@ -8213,6 +8213,8 @@ function smartRoutePage() {
   // 智能路由里只看这 5 个状态；未参与是另一条视图（不进路由）
   const SUB = ["candidate", "diagnosing", "cooling", "busy", "disabled", "excluded"];
   let cur = "candidate", entries = [], timer = null, view = "smart";
+  // 记住上次看的是哪一组；分组归属本身由后端落盘，这里只记筛选。
+  try { const saved = localStorage.getItem("mgsr.sub"); if (SUB.indexOf(saved) >= 0) cur = saved; } catch (e) {}
   let show = "classic";
   try { if (localStorage.getItem("mgsr.show") === "smart") show = "smart"; } catch (e) {}
 
@@ -8398,7 +8400,7 @@ function smartRoutePage() {
       : cur === "diagnosing" ? "没有待诊断的模型" : "这里还没有模型";
     const inner = `<div class="rt-sub">${bar}</div>` + (list || `<div class="sr-empty">${emptyText}</div>`);
     smart.innerHTML = inner;
-    smart.querySelectorAll("[data-sub]").forEach((b) => { b.onclick = () => { cur = b.dataset.sub; draw(); }; });
+    smart.querySelectorAll("[data-sub]").forEach((b) => { b.onclick = () => { cur = b.dataset.sub; try { localStorage.setItem("mgsr.sub", cur); } catch (e) {} draw(); }; });
     smart.querySelectorAll("[data-act]").forEach((b) => {
       b.onclick = async () => {
         if (b.dataset.act === "reset") {
