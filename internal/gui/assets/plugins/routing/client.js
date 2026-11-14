@@ -8263,7 +8263,10 @@ function smartRoutePage() {
       : e.state === "excluded" ? "" : "bad";
 
     const cell = (k, v) => `<div class="sr-cell"><b>${k}</b><i>${esc(v)}</i></div>`;
-    const types = (Array.isArray(e.outputs) && e.outputs.length ? e.outputs : e.inputs || [])
+    // 类型：先说它收什么（视觉模型的 image 在 inputs 里），再补只有输出的
+    // （生图模型的 image 只在 outputs 里）。只看 outputs 会把视觉模型写成
+    // 「文本」，让人以为它不能收图（用户：「智能路由不支持图片类型」）
+    const types = [...new Set([].concat(e.inputs || [], e.outputs || []))]
       .map((t) => TYPE_NAMES[t] || t).join("/") || "文本";
     const ctx = e.context
       ? (typeof tokenSize === "function" ? tokenSize(e.context) : Math.round(e.context / 1000) + "K")
