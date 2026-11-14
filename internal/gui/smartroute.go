@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/smartroute"
 )
@@ -52,6 +53,19 @@ func smartrouteEntries(now time.Time) (picked, measured []smartroute.SnapshotEnt
 	// NVIDIA 的 id 本身就是 nvidia/nemotron-…，供应商 ID 也叫 nvidia，
 	// 那样会把它们的检测记录全丢掉（重启后这两个模型就没有状态了）。
 	out := store.Snapshot(now)
+	// 网关自己的休息表（额度用尽、限流、积分）才是「现在能不能用」的真相：
+	// 供应商额度用尽时请求在计划阶段就被拿掉了，智能路由的 store 只听见
+	// 回答过什么，永远不知道，于是把歇着好几小时的模型写成「候选中」。
+	for i := range out {
+		e := &out[i]
+		if e.State == smartroute.Excluded || e.State == smartroute.Disabled {
+			continue // the user's own choice, and a model-level disable, stand
+		}
+		if until, ok := gateway.RestingFor(e.Provider, e.Model, now); ok && until.After(e.CoolingUntil) {
+			e.State = smartroute.Cooling
+			e.CoolingUntil = until
+		}
+	}
 	measured = make([]smartroute.SnapshotEntry, 0, len(out))
 	for _, e := range out {
 		if strings.HasPrefix(e.Model, e.Provider+"/"+e.Provider+"/") {

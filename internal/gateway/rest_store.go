@@ -175,3 +175,35 @@ func restKeysStored() (func(string) bool, error) {
 		return keys[k]
 	}, nil
 }
+
+// RestingFor is whether the gateway is resting providerID's model now — out
+// of quota, out of credits, rate limited — and until when. The smart routing
+// page shows those as 冷却中: a vendor's allowance running out is found at
+// plan time, before any request goes out, so the smartroute store (which only
+// hears about answers) never learned it and kept listing the model as a
+// candidate (分组里没有显示：Trae CN 两个账号额度用尽还有 5 小时，页面仍写「候选中」).
+func RestingFor(providerID, model string, now time.Time) (time.Time, bool) {
+	if providerID == "" {
+		return time.Time{}, false
+	}
+	restingUntil.Lock()
+	defer restingUntil.Unlock()
+	var until time.Time
+	for id, u := range restingUntil.m {
+		if !now.Before(u) || !u.After(until) {
+			continue
+		}
+		tail, ok := strings.CutPrefix(id, providerID)
+		if !ok || (tail != "" && tail[0] != '@' && tail[0] != '#' && tail[0] != '/') {
+			continue // another provider whose id starts with the same letters
+		}
+		// tail is "" (the provider), "@user" (the account), "#key" (a key),
+		// "@user/<model>" or "#key/<model>" (one model of it), "/<model>"
+		if i := strings.IndexByte(tail, '/'); i >= 0 && tail[i+1:] != model {
+			continue
+		}
+		until = u
+	}
+	return until, !until.IsZero()
+}
+
