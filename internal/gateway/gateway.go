@@ -2656,6 +2656,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// nothing has been sent yet
 	var cands []candidate
 	var pl planned
+	// 慢的请求要能分清是准备慢（解析、计划、筛候选）还是上游慢
+	var prepared time.Duration
 	var group *GroupRef
 	// a conversation's affinity is to one model: another's cache is its
 	// own, and an agent's side requests (a title, a summary) to a smaller
@@ -2699,6 +2701,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			fastPick(cands, pl, p.ID, model, provider.IsUltraPick(agent, p.ID+"/"+model))
 		}
 	}
+	prepared = time.Since(start)
 	// 智能路由是它自己的一套规则：候选顺序就是页面上的分数顺序，不套用
 	// 原版路由的并发让位、休息探针这些重排。某个候选这刻满了，就在它的
 	// 队列里等，而不是跳到后面的候选去。
@@ -3250,6 +3253,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			providerKeyID, providerKeyName = provider.KeyID(c.p.Key), c.p.KeyName
 		}
 		providerAccount = accountOf(c.p)
+		if firstBegan.IsZero() {
+			// 第一条尝试发出前等了多久，其中多少花在准备上
+			if d := time.Since(start); d > 2*time.Second {
+				log.Printf("gateway: %s: prepared in %s, first try at %s", c.label(), prepared.Round(time.Millisecond), d.Round(time.Millisecond))
+			}
+		}
 		began := time.Now()
 		ended = time.Time{}
 		if firstBegan.IsZero() {
