@@ -423,6 +423,19 @@ func (s *Store) FailedOf(provider, model, rest string, seats int, f Failure) {
 	}
 }
 
+// Forget drops one entry: a model gone from the catalog, and tests that
+// must not leave made-up models in a store they borrowed.
+func (s *Store) Forget(provider, model string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := Key(provider, model)
+	if _, ok := s.entries[k]; !ok {
+		return
+	}
+	delete(s.entries, k)
+	s.save()
+}
+
 // SetExcluded takes a model out of the running, or puts it back.
 func (s *Store) SetExcluded(provider, model string, excluded bool) {
 	s.Update(provider, model, func(e *Entry) { e.Excluded = excluded })

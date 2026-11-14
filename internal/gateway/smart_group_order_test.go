@@ -42,6 +42,7 @@ func TestSmartGroupKeepsListedOrder(t *testing.T) {
 	for _, id := range []string{"a", "b"} {
 		smartroute.Open().Get(id, "m", time.Now())
 		smartroute.Open().ClearRest(id, "m")
+		defer smartroute.Open().Forget(id, "m")
 	}
 
 	// a group of the user's, on Smart: the original rule still weighs it
