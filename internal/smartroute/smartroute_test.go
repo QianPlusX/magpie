@@ -280,10 +280,10 @@ func TestSoonScoresHigher(t *testing.T) {
 	if far != base {
 		t.Fatalf("60 days out should not add points: %d vs %d", far, base)
 	}
-	if near != base+20 {
-		t.Fatalf("2 days out should add 15+5: got %d, want %d", near, base+20)
+	if near != base+30 {
+		t.Fatalf("2 days out should add 15+5+10: got %d, want %d", near, base+30)
 	}
-	if urgent != base+25 {
-		t.Fatalf("12 hours out should add 15+5+5: got %d, want %d", urgent, base+25)
+	if urgent != base+45 {
+		t.Fatalf("12 hours out should add 15+5+10+15: got %d, want %d", urgent, base+45)
 	}
 }
