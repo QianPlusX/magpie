@@ -656,7 +656,8 @@ func sortEntries(es []SnapshotEntry) {
 }
 
 // Score 是模型打分：倍率 30 + 首字 15 + 速度 30 + 上下文 15 + 整体延迟 10
-// + 额度即将重置 15，满分 115。页面上的列表顺序与 group/smart 的成员顺序都按它排。
+// + 额度即将重置 15（≤2 天再 +5、≤1 天再 +5，可叠加），满分 125。页面上的列表
+// 顺序与 group/smart 的成员顺序都按它排。
 //
 // 「快到到期」这一项是给额度快作废的账号加分：窗口还剩几天就重置，
 // 现在不用掉就浪费了。没有额度窗口的（Soon 为零）不加不减。
@@ -733,7 +734,8 @@ func ScoreAt(e SnapshotEntry, now time.Time) int {
 		}
 	}
 	if e.Soon > 0 {
-		switch days := time.Unix(e.Soon, 0).Sub(now).Hours() / 24; {
+		days := time.Unix(e.Soon, 0).Sub(now).Hours() / 24
+		switch {
 		case days <= 3:
 			s += 15
 		case days <= 7:
@@ -742,6 +744,14 @@ func ScoreAt(e SnapshotEntry, now time.Time) int {
 			s += 8
 		case days <= 30:
 			s += 4
+		}
+		// 越临近越要抓紧用掉：在上面那一档之上再叠两层，两条都命中就都加
+		// （用户 2026-11-15：≤2 天额外 +5，≤1 天额外 +5，可叠加）
+		if days <= 2 {
+			s += 5
+		}
+		if days <= 1 {
+			s += 5
 		}
 	}
 	return s

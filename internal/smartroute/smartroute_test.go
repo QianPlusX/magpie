@@ -276,10 +276,14 @@ func TestSoonScoresHigher(t *testing.T) {
 	base := ScoreAt(mk(0), now)
 	far := ScoreAt(mk(now.Add(60*24*time.Hour).Unix()), now)
 	near := ScoreAt(mk(now.Add(2*24*time.Hour).Unix()), now)
+	urgent := ScoreAt(mk(now.Add(12*time.Hour).Unix()), now)
 	if far != base {
 		t.Fatalf("60 days out should not add points: %d vs %d", far, base)
 	}
-	if near != base+15 {
-		t.Fatalf("2 days out should add 15: got %d, want %d", near, base+15)
+	if near != base+20 {
+		t.Fatalf("2 days out should add 15+5: got %d, want %d", near, base+20)
+	}
+	if urgent != base+25 {
+		t.Fatalf("12 hours out should add 15+5+5: got %d, want %d", urgent, base+25)
 	}
 }

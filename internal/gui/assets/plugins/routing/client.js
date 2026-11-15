@@ -8350,7 +8350,8 @@ function smartRoutePage() {
     return `<div class="sr-item">${head}${perf}${spec}${alert}${err}<div class="sr-acts">${acts.join("")}</div></div>`;
   }
 
-  // 打分：倍率 30 + 首字 15 + 速度 30 + 上下文 15 + 整体延迟 10 + 快到重置 15 = 115
+  // 打分：倍率 30 + 首字 15 + 速度 30 + 上下文 15 + 整体延迟 10 + 快到重置 15
+  // （≤2 天再 +5、≤1 天再 +5，可叠加）= 125
   function scoreOf(e) {
     let s = 0;
     const rate = typeof e.rate === "number" ? e.rate : null;
@@ -8381,6 +8382,9 @@ function smartRoutePage() {
     if (typeof e.soon === "number" && e.soon > 0) {
       const days = (e.soon * 1000 - Date.now()) / 86400000;
       s += days <= 3 ? 15 : days <= 7 ? 12 : days <= 14 ? 8 : days <= 30 ? 4 : 0;
+      // 越临近越要抓紧用掉：在上一档之上再叠两层，两条都命中就都加
+      if (days <= 2) s += 5;
+      if (days <= 1) s += 5;
     }
     return s;
   }
