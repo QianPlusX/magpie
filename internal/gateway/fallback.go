@@ -674,6 +674,7 @@ func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider
 // (不参与) or has in cooling are dropped by dropSmartExcluded — that is the
 // only filter here, because a request has to try the page's order as it is.
 func (s *Server) planSmart(g provider.Group, ms []provider.Member, from provider.Protocol) ([]candidate, planned) {
+	ms = smartOrder(ms)
 	var pl planned
 	out := make([]candidate, 0, len(ms)*2)
 	for _, m := range ms {
@@ -698,6 +699,35 @@ func (s *Server) planSmart(g provider.Group, ms []provider.Member, from provider
 	out, pl = dropSmartExcluded(out, pl)
 	placed(ms, out)
 	return out, pl
+}
+
+// smartOrder is ms in the smart page's live score order.
+//
+// The group's member list is that order too, but ensureSmartGroup rewrites it
+// only every 30 seconds and leaves an unchanged set alone for up to a minute,
+// so a request inside that window tried a stale order (the user: 没有按候选
+// 顺序，似乎按供应商排序了，是按照候选排序里的). Scoring is cheap, so ask the
+// store here and keep the group's definition for display.
+func smartOrder(ms []provider.Member) []provider.Member {
+	es := smartroute.Open().Snapshot(time.Now())
+	if len(es) == 0 {
+		return ms
+	}
+	rank := make(map[string]int, len(es))
+	for i, e := range es {
+		rank[e.Provider+"/"+e.Model] = i
+	}
+	out := make([]provider.Member, len(ms))
+	copy(out, ms)
+	sort.SliceStable(out, func(i, j int) bool {
+		a, oka := rank[out[i].Provider.ID+"/"+out[i].Model]
+		b, okb := rank[out[j].Provider.ID+"/"+out[j].Model]
+		if oka != okb {
+			return oka
+		}
+		return a < b
+	})
+	return out
 }
 
 // placed sets each of cs's place: where its member is in ms, the group's

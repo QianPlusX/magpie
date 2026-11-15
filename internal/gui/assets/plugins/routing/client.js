@@ -8388,11 +8388,10 @@ function smartRoutePage() {
   function draw() {
     const groups = {};
     for (const k of Object.keys(NAMES)) groups[k] = [];
+    // 顺序沿用后端：entries 就是 smartroute.Snapshot 排好的分数顺序，网关的
+    // planSmart 也按同一份快照排候选。这里再自己排一次会让两边同分时的 tie-break
+    // 不一样，页面说的顺序和真试的顺序就对不上了。
     for (const e of entries) (groups[e.state] || groups.diagnosing).push(e);
-    for (const k of Object.keys(groups)) {
-      groups[k].sort((a, b) => scoreOf(b) - scoreOf(a)
-        || String(a.provider + a.model).localeCompare(String(b.provider + b.model)));
-    }
     // 分组归属与冷却的变化记一行：进/出冷却各一条，带 until 便于换算倒计时。
     const counts = SUB.map((k) => k + "=" + groups[k].length).join(" ");
     const cool = groups.cooling.map((e) => e.provider + "/" + e.model + "@"
