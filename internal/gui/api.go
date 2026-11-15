@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"maps"
 	"mime"
 	"net/http"
@@ -1122,6 +1123,30 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	})
 	omarchyRoutes(mux, w)
 	fontRoutes(mux, isWeb(w), !fonts.Available, fonts.List)
+	// 页面里的关键事件（切模式、换分组、冷却开始/结束）也写进日志：出问题时
+	// 用户能导一份日志看，而不是只能靠截图复述。
+	mux.HandleFunc("POST /api/log", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Tag string `json:"tag"`
+			Msg string `json:"msg"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		tag := strings.TrimSpace(in.Tag)
+		if tag == "" {
+			tag = "ui"
+		}
+		msg := strings.TrimSpace(in.Msg)
+		if len(msg) > 500 {
+			msg = msg[:500]
+		}
+		if msg != "" {
+			log.Printf("[%s] %s", tag, msg)
+		}
+		writeJSON(rw, map[string]any{"ok": true})
+	})
 	mux.HandleFunc("GET /api/state", func(rw http.ResponseWriter, r *http.Request) {
 		// the panel and its model picker load from here: an account still
 		// without its vendor's list (one whose try at start-up failed) is

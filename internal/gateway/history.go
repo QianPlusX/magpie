@@ -12,7 +12,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log"
 	"maps"
 	"os"
 	"path/filepath"
@@ -89,6 +91,16 @@ var historyClock = time.Now
 // saveRoute adds a done route to its day. Errors are swallowed: keeping
 // the history must never break a call.
 func saveRoute(r Route) {
+	// 每完成一个请求记一行：出问题时在日志里直接能看到「谁被选中、试了几个、
+	// 各自的耗时与状态」，不必回页面里翻。正文与密钥都不进来。
+	var tried strings.Builder
+	for i, t := range r.Tries {
+		if i > 0 {
+			tried.WriteString(" | ")
+		}
+		fmt.Fprintf(&tried, "%s/%s status=%d %dms", t.ID, t.Model, t.Status, t.Millis)
+	}
+	log.Printf("[route] agent=%s model=%s tries=%d %s", r.Agent, r.Model, len(r.Tries), tried.String())
 	r.Seq = 0
 	b, err := json.Marshal(r)
 	if err != nil {

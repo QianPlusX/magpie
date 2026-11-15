@@ -8221,11 +8221,24 @@ function smartRoutePage() {
   const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const num = (v, unit, digits) => (v ? (digits ? v.toFixed(digits) : Math.round(v)) + unit : "—");
 
+  // UI 侧的关键事件写进 magpie.log：切模式、换分组、冷却进出、加载失败。
+  // 只记「变化」——列表每秒重画一次，逐帧写会把 proot 的输出挤掉。
+  let logSeen = "", logCool = "";
+  function logit(msg) {
+    try {
+      fetch("/api/log", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag: "routing", msg }),
+      }).catch(() => {});
+    } catch (e) { /* 日志写不进去不影响页面 */ }
+  }
+
   async function load() {
     try {
       const r = await fetch("/api/smartroute", { cache: "no-store" });
       if (r.ok) entries = (await r.json()).entries || [];
-    } catch (e) { /* gateway not up yet */ }
+      else logit("读取 /api/smartroute 失败 HTTP " + r.status);
+    } catch (e) { logit("读取 /api/smartroute 失败：" + (e && e.message ? e.message : e)); }
     if (show === "smart") draw();
   }
 
@@ -8380,27 +8393,27 @@ function smartRoutePage() {
       groups[k].sort((a, b) => scoreOf(b) - scoreOf(a)
         || String(a.provider + a.model).localeCompare(String(b.provider + b.model)));
     }
-    // 冷却胶囊带倒计时：取这组里最早恢复的那个，不点进去也知道还要等多久
-    const coolLeft = () => {
-      let ms = Infinity;
-      for (const e of groups.cooling) {
-        for (const v of [e.coolingUntil, e.restUntil]) {
-          if (!v || String(v).startsWith("0001")) continue;
-          const d = new Date(v) - Date.now();
-          if (d > 0 && d < ms) ms = d;
-        }
-      }
-      if (!isFinite(ms)) return "";
-      const s = Math.round(ms / 1000);
-      return " · " + (s >= 3600 ? Math.round(s / 3600) + "小时后" : s >= 60 ? Math.round(s / 60) + "分钟后" : s + "秒后");
-    };
-    const bar = SUB.map((k) => `<button data-sub="${k}" class="${k === cur ? "on" : ""}">${NAMES[k]} ${groups[k].length}${k === "cooling" ? coolLeft() : ""}</button>`).join("");
+    // 分组归属与冷却的变化记一行：进/出冷却各一条，带 until 便于换算倒计时。
+    const counts = SUB.map((k) => k + "=" + groups[k].length).join(" ");
+    const cool = groups.cooling.map((e) => e.provider + "/" + e.model + "@"
+      + (e.coolingUntil || e.restUntil || "?")).join(",");
+    if (counts !== logSeen || cool !== logCool) {
+      if (counts !== logSeen) logit("分组 " + counts);
+      const was = new Set(logCool.split(",").filter(Boolean));
+      const nowSets = new Set(cool.split(",").filter(Boolean));
+      for (const x of was) if (!nowSets.has(x)) logit("冷却结束 " + x);
+      for (const x of nowSets) if (!was.has(x)) logit("进入冷却 " + x);
+      logSeen = counts;
+      logCool = cool;
+    }
+    // 倒计时只放在模型卡片里；分组标签只报数量。
+    const bar = SUB.map((k) => `<button data-sub="${k}" class="${k === cur ? "on" : ""}">${NAMES[k]} ${groups[k].length}</button>`).join("");
     const list = (groups[cur] || []).map(item).join("");
     const emptyText = cur === "excluded" ? "没有未参与的模型：点模型右边的「不参与」移出智能路由"
       : cur === "diagnosing" ? "没有待诊断的模型" : "这里还没有模型";
     const inner = `<div class="rt-sub">${bar}</div>` + (list || `<div class="sr-empty">${emptyText}</div>`);
     smart.innerHTML = inner;
-    smart.querySelectorAll("[data-sub]").forEach((b) => { b.onclick = () => { cur = b.dataset.sub; try { localStorage.setItem("mgsr.sub", cur); } catch (e) {} draw(); }; });
+    smart.querySelectorAll("[data-sub]").forEach((b) => { b.onclick = () => { cur = b.dataset.sub; try { localStorage.setItem("mgsr.sub", cur); } catch (e) {} logit("分组切换 -> " + NAMES[cur] + "（" + groups[cur].length + "）"); draw(); }; });
     smart.querySelectorAll("[data-act]").forEach((b) => {
       b.onclick = async () => {
         if (b.dataset.act === "reset") {
@@ -8435,6 +8448,7 @@ function smartRoutePage() {
 
   function pick(which) {
     show = which;
+    logit("模式切换 -> " + (which === "smart" ? "智能路由" : "原版路由"));
     try { localStorage.setItem("mgsr.show", which); } catch (e) {}
     tabs.querySelectorAll("[data-rtab]").forEach((b) => b.classList.toggle("on", b.dataset.rtab === which));
     const smartOn = which === "smart";
