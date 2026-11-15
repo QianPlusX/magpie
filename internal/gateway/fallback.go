@@ -644,12 +644,18 @@ const smartGroupID = "smart"
 // weighing, Sink and restLast entirely; every other group keeps all three and
 // never looks at the smart page's state.
 func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider.Protocol) ([]candidate, planned) {
-	smart := g.ID == smartGroupID
+	// group/smart is the smart page's own pool and has its own planner: none
+	// of the gateway's group strategies (weighing, sink, rest-last, probe,
+	// affinity) apply to it — the page's score order is the order requests
+	// ask in (the user: 按顺序读取当前候选里的模型).
+	if g.ID == smartGroupID {
+		return s.planSmart(g, ms, from)
+	}
 	var pl planned
 	var asides []candidate
 	var wAsides []Weighed
 	out := planLevel(g, ms, 0, from, &pl, &asides, &wAsides, nil)
-	if !smart && sinks(g.Sink, g.Routing) {
+	if sinks(g.Sink, g.Routing) {
 		out, pl.order = sinkPlanned(out, pl.order)
 	}
 	out, pl.order = append(out, asides...), append(pl.order, wAsides...)
@@ -658,30 +664,39 @@ func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider
 	}
 	placed(ms, out)
 	placed(ms, pl.unlisted)
-	// 智能路由按候选顺序一个个试：不再用原版那套（休息中的挪到最后、
-	// 只留一个快恢复的探针）。顺序就是页面上的分数顺序。
-	if smart {
-		return keepOrder(out, pl)
-	}
 	return restLast(out, pl)
 }
 
-// keepOrder is restLast for the smart group: the models the smart page keeps
-// out are dropped, everything else stays where it is. The page's score order
-// is the order requests ask in (the user: 按顺序读取当前候选里的模型).
-func keepOrder(out []candidate, pl planned) ([]candidate, planned) {
-	out, pl = dropSmartExcluded(out, pl)
-	now := time.Now()
-	for i, c := range out {
-		if i >= len(pl.order) {
-			break
+// planSmart plans group/smart on its own, apart from planGroup's strategies:
+// the members as the page wrote them (its score order), each member's keys or
+// accounts as its own provider lists them (the user's account order, the
+// provider's own routing), and nothing else. The models the page keeps out
+// (不参与) or has in cooling are dropped by dropSmartExcluded — that is the
+// only filter here, because a request has to try the page's order as it is.
+func (s *Server) planSmart(g provider.Group, ms []provider.Member, from provider.Protocol) ([]candidate, planned) {
+	var pl planned
+	out := make([]candidate, 0, len(ms)*2)
+	for _, m := range ms {
+		cs, aside, _, _ := perKeyBarred(m.Provider, m.Model, from)
+		// 额度受限但还能试的账号排在可用账号之后（与成员自己的顺序一致）
+		cs = append(cs, aside...)
+		for i := range cs {
+			cs[i].effort, cs[i].levels, cs[i].fast = m.Effort, m.Levels, m.Fast
+			cs[i].firstToken = innerFirstToken(m)
+			cs[i].patience = innerPatience(m)
+			if len(m.Path) > 0 {
+				cs[i].member = m.Path[0]
+			}
 		}
-		if r, ok := restingOf(c); ok {
-			pl.order[i].Rest = &r // said in the trace, not acted on
+		for _, c := range cs {
+			w := weighed(c, m.Provider, weighing{}, false, from)
+			w.Via = m.Groups()
+			pl.order = append(pl.order, w)
 		}
-		pl.order[i].Busy = 0
-		_ = now
+		out = append(out, cs...)
 	}
+	out, pl = dropSmartExcluded(out, pl)
+	placed(ms, out)
 	return out, pl
 }
 

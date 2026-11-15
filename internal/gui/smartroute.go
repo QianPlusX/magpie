@@ -138,16 +138,14 @@ func ensureSmartGroup(now time.Time) {
 		if sameMembers(g.Members, members) && time.Since(lastGroupWrite) < time.Minute {
 			return
 		}
-		// 顺序路由（Ordered）：候选就是这里写的成员顺序。用默认的空
-		// routing 会把所有账号合池按额度重排，页面上的分数顺序就白排了，
-		// 请求会跳过前面分数高的模型先试额度快重置的账号。
-		g.Members, g.Routing = members, provider.Ordered
+		// 只改成员：group/smart 的顺序由网关的 planSmart 按这里写的顺序
+		// 逐个试，不借原版任何 routing（空 routing 也不会被合池重排）。
+		g.Members = members
 		_ = provider.SaveGroup(g)
 		lastGroupWrite = time.Now()
 		return
 	}
-	_ = provider.SaveGroup(provider.Group{ID: smartGroupID, Name: "智能路由",
-		Routing: provider.Ordered, Members: members})
+	_ = provider.SaveGroup(provider.Group{ID: smartGroupID, Name: "智能路由", Members: members})
 	lastGroupWrite = time.Now()
 }
 
