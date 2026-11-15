@@ -31,6 +31,66 @@ and when a quota runs out, it quietly moves on to your next account.
 
 <br>
 
+## What this fork changes
+
+This is [QianPlusX/magpie](https://github.com/QianPlusX/magpie), a fork of magpie. The
+agents, providers and gateway are the same product; these are the differences.
+
+### A routing group that follows its own page
+
+- `group/smart` has its own planner (`planSmart` in `internal/gateway/fallback.go`):
+  members are tried in the smart page's score order, each member's keys and accounts
+  are expanded the way that provider lists them, and none of the group strategies
+  (weighing, sink, rest-last, probe, affinity) apply to it.
+  *Why:* the page says "these models, in this order", but the group used to re-sort
+  them by quota and traffic, so a request could go to a model the page ranked lower.
+- The page's candidate list, the group's member list and the actual attempts all read
+  one `smartroute.Snapshot`, and the planner re-sorts on every request instead of
+  waiting for the 30-second member-list writer.
+  *Why:* the two sides could disagree for up to a minute, which looked like the
+  gateway ignoring the page.
+- Scoring (max 145): rate 30, first token 15, speed 30, context 15, latency 10 and
+  "allowance resets soon" 15, plus a stacked urgency bonus (+5 within 3 days, +10
+  within 2, +15 within 1).
+  *Why:* an allowance that expires in hours is worth more than one that expires next
+  month; the old tiers treated 2 days and 29 days almost the same.
+- Cooling and rests are shared both ways: a real 429 puts the model in cooling on the
+  page, and ending a cooling also clears the gateway's rest entry. Model cards show the
+  countdown, and the routing page remembers the last tab you looked at.
+  *Why:* the page used to keep saying "candidate" for a model the gateway had already
+  rested, and vice versa.
+
+### Plugin sign-in goes through the stream
+
+A plugin's browser window opens on the container's X display and is brought up in the
+noVNC page, so it can be used by touch on the phone.
+*Why:* that window used to be invisible in a headless container, and the plugin
+reported "Chrome closed the debugging connection".
+
+### Mobile layout
+
+Settings tabs scroll horizontally on one row, the search box gets its own row, the
+"serves …" chips wrap instead of overflowing into the next row, and a plugin's action
+column can grow to the whole row on a narrow screen.
+*Why:* the desktop layout is cramped on a phone, and buttons were being clipped.
+
+### A fast first paint for settings
+
+`GET /api/settings?light=1` returns the page without per-plugin check-in cards,
+accounts, visual models and provider probes; the full payload follows and replaces it,
+behind a 30-second cache and a startup warmup.
+*Why:* the full payload took about 27 seconds on a phone, the light one about 0.3.
+
+### Diagnostics
+
+Routing decisions, group switches, cooling transitions and every request's try chain
+are written to the container log (`[routing] …`, `[route] agent=… tries=…`), and
+`POST /api/log` lets the page append to the same file. Slow requests also report how
+long preparation and the allowance reading took.
+*Why:* on a phone there are no devtools to attach.
+
+<br>
+
 ## Is magpie for you?
 
 Each agent keeps its model in its own file, in its own format, with its own keys and base URLs. A subscription you pay for works in one agent and nowhere else. magpie puts all of that behind one app and one local gateway:
